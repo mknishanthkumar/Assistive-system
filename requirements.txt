@@ -1,0 +1,26 @@
+# requirements.txt – Assistive Control System
+# Pinned versions verified on Python 3.11 / Windows 10-11
+
+# Computer vision & face tracking
+opencv-python==4.10.0.84
+numpy==1.26.4
+mediapipe==0.10.18
+
+# Speech recognition
+faster-whisper==1.1.0
+sounddevice==0.5.1
+webrtcvad-wheels==2.0.14
+
+# Input / output control
+pynput==1.7.7
+pyautogui==0.9.54
+uiautomation==2.0.20
+pywin32==308
+
+# GUI overlay
+PyQt5==5.15.11
+
+# Data analysis & ML utilities
+pandas==2.2.3
+matplotlib==3.9.2
+scikit-learn==1.5.2

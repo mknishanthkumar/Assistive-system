@@ -1,0 +1,47 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Pytest & test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment variables and secrets
+.env
+.env.*
+
+# Logs (keep logs/ folder via .gitkeep)
+logs/*
+!logs/.gitkeep
+*.log
+
+# AI Agent instructions
+AI AGENT GUIDE.txt
+AI_AGENT_GUIDE.txt
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Downloaded AI / ML model files (keep folder via .gitkeep)
+models/*
+!models/.gitkeep
+
+# Output artifacts / recordings (keep folder via .gitkeep)
+output/*
+!output/.gitkeep
