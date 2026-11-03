@@ -42,6 +42,3 @@ $RECYCLE.BIN/
 models/*
 !models/.gitkeep
 
-# Output artifacts / recordings (keep folder via .gitkeep)
-output/*
-!output/.gitkeep

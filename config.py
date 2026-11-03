@@ -168,10 +168,69 @@ WHISPER_DEVICE: str = "cpu"               # cpu | cuda
 WHISPER_COMPUTE_TYPE: str = "int8"        # int8 | float16 | float32
 WHISPER_LANGUAGE: str = "en"
 
-AUDIO_SAMPLE_RATE: int = 16000            # Hz
-AUDIO_CHANNELS: int = 1
-AUDIO_BLOCK_DURATION_MS: int = 30         # VAD frame size (10/20/30 ms)
-VAD_AGGRESSIVENESS: int = 2               # 0-3, higher = more aggressive
+# -----------------------------------------------
+# Stage 3 - Microphone capture
+# -----------------------------------------------
+# Device index for sounddevice. None = use system default input device.
+MIC_DEVICE_INDEX: int | None = None
+
+AUDIO_SAMPLE_RATE: int = 16000            # Hz  (must be 8000, 16000, 32000, or 48000 for VAD)
+AUDIO_CHANNELS: int = 1                   # Mono only for WebRTC VAD
+AUDIO_BLOCK_DURATION_MS: int = 30         # VAD frame size (10, 20, or 30 ms)
+
+# -----------------------------------------------
+# Stage 3 - Voice Activity Detection (WebRTC VAD)
+# -----------------------------------------------
+VAD_AGGRESSIVENESS: int = 2               # 0-3, higher = more aggressive filtering
+
+# Minimum number of consecutive speech frames needed to begin a speech segment.
+# Prevents single noisy frames from starting a segment.  3 frames × 30 ms = 90 ms.
+SPEECH_TRIGGER_FRAMES: int = 3
+
+# Minimum total duration (seconds) of a speech segment to be sent for transcription.
+# Segments shorter than this are discarded as noise or throat-clearing.
+SPEECH_MIN_DURATION_S: float = 0.4
+
+# Duration (seconds) of continuous silence needed AFTER speech to finalise a segment.
+# Too short → sentence gets split.  Too long → user waits before result appears.
+SPEECH_SILENCE_DURATION_S: float = 0.8
+
+# Number of pre-speech frames kept in a ring buffer and prepended to the segment.
+# Captures the onset of speech that VAD may initially miss.
+SPEECH_PADDING_FRAMES: int = 10
+
+# -----------------------------------------------
+# Stage 3 - Command parser (fuzzy matching)
+# -----------------------------------------------
+# Minimum difflib.SequenceMatcher ratio to accept a recognised phrase as a command.
+# Lower → more tolerant of misrecognition.  Higher → fewer false positives.
+FUZZY_MATCH_THRESHOLD: float = 0.70
+
+# -----------------------------------------------
+# Stage 3 - Noise-level measurement
+# -----------------------------------------------
+# Number of recent 30 ms frames used to compute the rolling average RMS noise level.
+# 50 frames × 30 ms = 1.5 s window.
+NOISE_RMS_WINDOW_FRAMES: int = 50
+
+# -----------------------------------------------
+# Stage 3 - Action execution (OutputController)
+# -----------------------------------------------
+# Minimum speech confidence (0.0-1.0) required to execute a command action.
+# Commands below this threshold are logged but NOT executed.
+SPEECH_CONFIDENCE_THRESHOLD: float = 0.40
+
+# Per-command cooldown in seconds.  Prevents duplicate actions when the same
+# command fires multiple times from a single utterance.
+SPEECH_COMMAND_COOLDOWN_S: float = 1.0
+
+# Number of scroll "clicks" for scroll_up / scroll_down commands.
+# Positive = up, negative = down.  pyautogui.scroll(3) ≈ 3 mouse-wheel notches.
+SCROLL_AMOUNT: int = 3
+
+# Delay in seconds between individual keystrokes when typing dictation text.
+# 0.0 = fastest; increase if the target app drops characters.
+DICTATION_TYPE_DELAY_S: float = 0.02
 
 # -----------------------------------------------
 # Context engine
