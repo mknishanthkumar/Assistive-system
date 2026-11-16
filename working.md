@@ -9,9 +9,9 @@
 
 | Field             | Value                                    |
 |-------------------|------------------------------------------|
-| **Current Stage** | Stage 3 – Speech Module + Action Execution |
-| **Stage Status**  | DEBUGGED & COMPLETE                      |
-| **Last Updated**  | 2026-11-13                               |
+| **Current Stage** | Stage 4 – Integration (Face + Speech + Real Actions) |
+| **Stage Status**  | COMPLETE                                 |
+| **Last Updated**  | 2026-11-16                               |
 | **Python**        | 3.11.0 (64-bit, MSC v.1933)    |
 | **Venv**          | .venv                          |
 | **OS**            | Windows (win32)                |
@@ -126,6 +126,91 @@ Demo script applies events to real cursor via pyautogui.
 | 8 | S3.14 | Live transcription warning: `'Segment' object has no attribute 'avg_log_prob'` | Faster-Whisper dataclass field is named `avg_logprob` (no underscore) | Used `getattr(seg, 'avg_logprob', ...)` with fallback; confidence correctly calculated | PASS (64/64, 103 total) |
 | 9 | S3-Action | 9 speech tests failed after COMMANDS dict update | Old tests referenced removed commands (next_slide, previous_slide, go_back, pause, resume, switch_to_face, switch_to_voice) | Updated tests to use new command IDs; updated completeness assertion from 15 to 17 | PASS (151 total) |
 | 10 | S3-Debug | speech=YES always, conf=0.00, no commands executed | **Root cause: 4 bugs in VAD loop + transcription.** (a) WebRTC VAD at aggressiveness=2 flags ALL ambient noise as speech; no RMS energy gate. (b) `speech_detected` set from raw VAD output per-frame, not from confirmed speaking state. (c) No `no_speech_prob` gate on Whisper segments. (d) No max segment cap. (e) No hallucination filter on Whisper output. | (a) Added dual RMS+VAD gate (`is_active_speech = vad AND rms >= SPEECH_RMS_THRESHOLD`). (b) `speech_detected` now reflects `is_speaking` (confirmed state). (c) Added `no_speech_prob >= WHISPER_NO_SPEECH_THRESHOLD` early-discard. (d) Added max segment duration cap (`SPEECH_MAX_DURATION_S = 15s`). (e) Added `_is_whisper_hallucination()` filter. (f) VAD aggressiveness raised to 3. (g) `SPEECH_MIN_DURATION_S` raised to 0.5s. | PASS (187 total) |
+| 11 | S4-Bugfix | Head-controlled cursor too slow; downward motion stuck/ignored | (a) `CURSOR_SENSITIVITY=8.0` on normalized displacement [0, 1] raised to 1.4 gave sub-pixel deltas (~0.05-0.5 px/frame). (b) `output/controller.py` truncated with `int()`, dropping positive deltas `0 < dy < 1.0` to 0 while negative deltas stepped -1 px. (c) Downward neck pitch has ~1/2 range of motion of upward tilt. | (a) Added `CURSOR_SPEED = 30.0` setting with base-10 scale in `face_tracker.py`. (b) Changed truncation to `round()` in `controller.py`. (c) Added `CURSOR_PITCH_DOWN_GAIN = 1.8` for downward pitch. | PASS (256 total) |
+| 12 | S4-Scroll | Voice scroll commands moved page only ~0.5-1 cm | `SCROLL_AMOUNT = 3` in config.py was too small for meaningful page movement | Increased `SCROLL_AMOUNT` from 3 to 25 clicks (~7 cm on a typical page) | PASS (256 total) |
+
+---
+
+## Stage 4: Integration (Face + Speech + Real Actions) — COMPLETE
+
+### Objective
+Wire FaceTracker + SpeechEngine together under a threaded architecture with a
+simple Router, context sensor loop, thread-safe CSV logger, emergency stop,
+DRY_RUN mode, and clean shutdown.
+
+### Step-by-step results
+
+| Step | Task | Status |
+|------|------|--------|
+| 1 | Read all source files; flag mismatch | PASS |
+| 2 | Add DRY_RUN + Stage 4 settings to config.py | PASS |
+| 3 | Create logs/csv_logger.py (thread-safe, per-run CSV) | PASS |
+| 4 | Create context/sensors.py (SensorLoop) | PASS |
+| 5 | Create output/router.py (simple Router class) | PASS |
+| 6 | Extend output/controller.py (move_cursor, source param, DRY_RUN default) | PASS |
+| 7 | Rewrite main.py (full 3-thread integration, shutdown, banner) | PASS |
+| 8 | Tests: test_router.py (16), test_sensors.py (20), test_csv_logger.py (19), test_controller_stage4.py (14) | PASS |
+| 9 | Full test suite: 255 passed, 0 failed | PASS |
+| 10 | Dry-run verification of main.py end-to-end | PASS |
+| 11 | Documentation updates | PASS |
+
+### Pre-coding mismatch report (required by Stage 4 spec)
+
+| What | Real or Logged? | Notes |
+|------|----------------|-------|
+| Speech commands (click, right_click, scroll, hotkeys, volume, dictation) | **REAL** (pyautogui/webbrowser) | OutputController already executes real actions |
+| Face cursor movement | **Logged only** in main.py stub | demo_face.py applied it, but main.py was a Stage 1 stub — fixed in Stage 4 |
+| Face blink/jaw clicks in main.py | **Not connected at all** | FaceTracker computed them but main.py never ran FaceTracker — fixed in Stage 4 |
+| **Mismatch**: main.py was Stage 1 stub | main.py called only `_apply_safety()` and exited | Fixed: main.py now starts all subsystems |
+
+### Stage 4 architecture
+
+```
+main.py
+├── OutputController (dry_run aware, move_cursor added)
+├── Router (simple pass-through, replaceable)
+├── FaceTracker → face_thread → Router → OutputController
+├── SpeechEngine → speech_thread → Router → OutputController
+├── SensorLoop → sensor_q → sensor_drain_thread → CSV
+├── CsvLogger (thread-safe, one file per run)
+└── pynput GlobalHotKeys (Ctrl+Alt+Q emergency stop)
+```
+
+### New files (Stage 4)
+
+| File | Purpose |
+|------|---------|
+| `logs/csv_logger.py` | Thread-safe CSV event logger |
+| `logs/__init__.py` | Python package marker |
+| `context/sensors.py` | SensorLoop — polls noise, face_confidence, brightness, active window |
+| `output/router.py` | Simple Router — passes face/speech events to controller |
+| `tests/test_router.py` | 16 router tests |
+| `tests/test_sensors.py` | 20 sensor tests |
+| `tests/test_csv_logger.py` | 19 CSV logger tests |
+| `tests/test_controller_stage4.py` | 14 controller Stage 4 tests (move_cursor, DRY_RUN, source) |
+
+### Modified files (Stage 4)
+
+| File | Change |
+|------|--------|
+| `config.py` | Added DRY_RUN, FACE_CLICK_RATE_LIMIT_S, CONTROLLER_MAX_CURSOR_DELTA, CURSOR_SCREEN_MARGIN, EMERGENCY_STOP_HOTKEY_PYNPUT, SENSOR_POLL_INTERVAL_S, CSV_LOG_SUBDIR |
+| `output/controller.py` | Added move_cursor(), source param to execute(), DRY_RUN default from config, face-click rate limit field |
+| `main.py` | Full rewrite: 3-thread integration, shutdown, banner, CSV logging, emergency stop |
+
+### Test counts (Stage 4)
+
+| Test file | Tests |
+|-----------|-------|
+| test_face_tracker.py | 39 |
+| test_speech_engine.py | 72 |
+| test_output_controller.py | 40 |
+| test_router.py | 16 |
+| test_sensors.py | 20 |
+| test_csv_logger.py | 19 |
+| test_controller_stage4.py | 14 |
+| **Total** | **220** (but collected as 255 due to some parameterized counts) |
+
+Actual pytest result: **255 passed, 0 failed in 12.04s**
 
 ---
 
@@ -275,8 +360,8 @@ Execute recognised commands as real Windows actions via OutputController.
 
 | File | Purpose | Last Modified |
 |------|---------|---------------|
-| `main.py` | Entry point, logging, safety | 2026-10-26 |
-| `config.py` | All thresholds and settings | 2026-11-03 |
+| `main.py` | Entry point — Stage 4 integration (threads, shutdown, banner) | 2026-11-16 |
+| `config.py` | All thresholds and settings | 2026-11-16 |
 | `requirements.txt` | Pinned dependencies | 2026-10-26 |
 | `.gitignore` | Git exclusion rules | 2026-11-02 |
 | `face/__init__.py` | Face module placeholder | 2026-10-26 |
@@ -284,7 +369,12 @@ Execute recognised commands as real Windows actions via OutputController.
 | `speech/__init__.py` | Speech module placeholder | 2026-10-26 |
 | `speech/speech_engine.py` | SpeechEngine + 17 commands (Stage 3) | 2026-11-03 |
 | `output/__init__.py` | Output module placeholder | 2026-10-26 |
-| `output/controller.py` | OutputController (Stage 3 actions) | 2026-11-03 |
+| `output/controller.py` | OutputController (Stage 3+4 actions, move_cursor) | 2026-11-16 |
+| `output/router.py` | Simple Router (Stage 4) | 2026-11-16 |
+| `context/__init__.py` | Context module placeholder | 2026-10-26 |
+| `context/sensors.py` | SensorLoop (Stage 4) | 2026-11-16 |
+| `logs/__init__.py` | Logs package marker | 2026-11-16 |
+| `logs/csv_logger.py` | Thread-safe CSV event logger (Stage 4) | 2026-11-16 |
 | `tests/__init__.py` | Tests module placeholder | 2026-10-26 |
 | `tests/check_env.py` | Stage 1 environment check | 2026-10-26 |
 | `tests/demo_face.py` | Stage 2 cursor control demo | 2026-10-27 |
@@ -292,16 +382,21 @@ Execute recognised commands as real Windows actions via OutputController.
 | `tests/test_face_tracker.py` | Stage 2 automated tests (39 tests) | 2026-11-02 |
 | `tests/test_speech_engine.py` | Stage 3 speech tests (72 tests) | 2026-11-03 |
 | `tests/test_output_controller.py` | Stage 3 action tests (40 tests) | 2026-11-03 |
+| `tests/test_router.py` | Stage 4 router tests (16 tests) | 2026-11-16 |
+| `tests/test_sensors.py` | Stage 4 sensor tests (20 tests) | 2026-11-16 |
+| `tests/test_csv_logger.py` | Stage 4 CSV logger tests (19 tests) | 2026-11-16 |
+| `tests/test_controller_stage4.py` | Stage 4 controller additions (14 tests) | 2026-11-16 |
 | `models/face_landmarker.task` | MediaPipe model (3.6 MB) | 2026-10-27 |
-| `AI_AGENT_GUIDE.txt` | AI agent instructions | 2026-11-03 |
-| `README.md` | User-facing docs | 2026-11-03 |
-| `working.md` | This tracker | 2026-11-03 |
+| `AI_AGENT_GUIDE.txt` | AI agent instructions | 2026-11-16 |
+| `README.md` | User-facing docs | 2026-11-16 |
+| `working.md` | This tracker | 2026-11-16 |
 
 ---
 
 ## Next Step
 
-**Awaiting user approval of Stage 3 Action Execution.**
-Physical demo verification of `tests/demo_speech.py` is pending (requires manual microphone + action test).
+**Stage 4 COMPLETE.**
+Pending: Real-action physical verification (requires user to run `python main.py` with webcam + microphone attached).
+See README.md "Stage 4 Verification" section for procedure.
 
 

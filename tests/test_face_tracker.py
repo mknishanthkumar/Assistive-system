@@ -262,6 +262,36 @@ class TestCursorDirection(unittest.TestCase):
         _, dy = self._delta(0.5, 0.5 - 0.1)
         self.assertLess(dy, 0.0, "Head moving up (nose_y decreases) should give negative dy")
 
+    def test_balanced_medium_speed_all_directions(self):
+        """Verify right, left, up, and down all produce medium, balanced speeds."""
+        def _get_direction_delta(nx, ny):
+            tracker = FaceTracker()
+            tracker._neutral_x = 0.5
+            tracker._neutral_y = 0.5
+            res = _make_result(nose_x=nx, nose_y=ny)
+            t = time.monotonic()
+            for i in range(10):
+                ev = tracker._build_events(res, brightness=120.0, now=t + i * 0.033)
+            return ev["cursor_delta_x"], ev["cursor_delta_y"]
+
+        # 0.06 horizontal displacement (moderate head turn)
+        dx_right, _ = _get_direction_delta(0.44, 0.5)
+        dx_left, _ = _get_direction_delta(0.56, 0.5)
+        # 0.06 upward displacement (moderate head tilt up)
+        _, dy_up = _get_direction_delta(0.5, 0.44)
+        # 0.038 downward displacement (moderate downward head tilt, naturally ~1/1.5 of up)
+        _, dy_down = _get_direction_delta(0.5, 0.538)
+
+        # All movements should be in comfortable medium range (8 - 15 px/frame)
+        self.assertTrue(8.0 <= dx_right <= 15.0, f"Right delta {dx_right} not in medium range [8, 15]")
+        self.assertTrue(8.0 <= abs(dx_left) <= 15.0, f"Left delta {dx_left} not in medium range [8, 15]")
+        self.assertTrue(8.0 <= abs(dy_up) <= 15.0, f"Up delta {dy_up} not in medium range [8, 15]")
+        self.assertTrue(8.0 <= dy_down <= 15.0, f"Down delta {dy_down} not in medium range [8, 15]")
+
+        # Down should be balanced with up (within 20% of each other)
+        speed_ratio = dy_down / abs(dy_up)
+        self.assertTrue(0.8 <= speed_ratio <= 1.2, f"Down/Up ratio {speed_ratio} not balanced")
+
 
 class TestBlinkGesture(unittest.TestCase):
     """Tests for bilateral long-blink left-click gesture."""

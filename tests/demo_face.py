@@ -173,8 +173,8 @@ def main() -> None:
             dy = events["cursor_delta_y"]
 
             if events["face_detected"] and (dx != 0.0 or dy != 0.0):
-                cur_x = int(np.clip(cur_x + dx, 0, screen_w - 1))
-                cur_y = int(np.clip(cur_y + dy, 0, screen_h - 1))
+                cur_x = int(round(np.clip(cur_x + dx, 0, screen_w - 1)))
+                cur_y = int(round(np.clip(cur_y + dy, 0, screen_h - 1)))
                 try:
                     pyautogui.moveTo(cur_x, cur_y, _pause=False)
                 except pyautogui.FailSafeException:

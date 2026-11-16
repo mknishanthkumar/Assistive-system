@@ -184,9 +184,9 @@ class FaceTracker:
         self._latest_frame: Optional[np.ndarray] = None
 
         logger.debug("FaceTracker initialised with config: "
-                     "dead_zone=%.3f sensitivity=%.1f smooth_window=%d",
+                     "dead_zone=%.3f speed=%.1f smooth_window=%d",
                      config.CURSOR_DEAD_ZONE,
-                     config.CURSOR_SENSITIVITY,
+                     config.CURSOR_SPEED,
                      config.CURSOR_SMOOTH_WINDOW)
 
     # ------------------------------------------------------------------
@@ -458,11 +458,13 @@ class FaceTracker:
             disp_y = 0.0
         else:
             disp_y = np.sign(disp_y) * (abs(disp_y) - dead)
+            if disp_y > 0:
+                disp_y *= getattr(config, "CURSOR_PITCH_DOWN_GAIN", 1.8)
 
-        # Acceleration: scale displacement by power law then sensitivity
+        # Acceleration: scale displacement by power law then speed
         def _accel(d: float) -> float:
-            return float(np.sign(d) * (abs(d) ** config.CURSOR_ACCEL_EXPONENT)
-                         * config.CURSOR_SENSITIVITY)
+            return float(np.sign(d) * ((abs(d) * 10.0) ** config.CURSOR_ACCEL_EXPONENT)
+                         * config.CURSOR_SPEED)
 
         delta_x = _accel(disp_x)
         delta_y = _accel(disp_y)

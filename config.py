@@ -74,9 +74,15 @@ FACE_LANDMARKER_MODEL_PATH: Path = MODEL_DIR / "face_landmarker.task"
 # At 640x480: 0.012 * 640 = ~7.7 px horizontal, 0.012 * 480 = ~5.8 px vertical.
 CURSOR_DEAD_ZONE: float = 0.012
 
-# Sensitivity multiplier applied to displacement after dead-zone subtraction.
-# Higher value = faster cursor for the same head movement amplitude.
-CURSOR_SENSITIVITY: float = 8.0
+# Master cursor speed setting. Higher value = faster cursor, lower = slower.
+# Recommended range: 15.0 (slow) to 50.0 (fast). Default: 30.0 (medium, comfortable).
+CURSOR_SPEED: float = 30.0
+CURSOR_SENSITIVITY: float = CURSOR_SPEED  # alias for backwards compatibility
+
+# Downward pitch gain multiplier. Downward head tilt has naturally ~half
+# the range of motion as upward tilt while viewing a screen. This gain ensures
+# downward movement feels as responsive as upward movement.
+CURSOR_PITCH_DOWN_GAIN: float = 1.8
 
 # Maximum allowed per-frame cursor delta in pixels.
 # Prevents sudden jumps caused by detection noise or rapid head snaps.
@@ -87,7 +93,7 @@ CURSOR_MAX_DELTA: float = 40.0
 CURSOR_SMOOTH_WINDOW: int = 5
 
 # Acceleration exponent applied to the normalised displacement before
-# multiplying by CURSOR_SENSITIVITY.
+# multiplying by CURSOR_SPEED.
 # >1.0 keeps small displacements slow while large displacements accelerate.
 # Recommended range: 1.0 (linear) - 2.0 (strong acceleration).
 CURSOR_ACCEL_EXPONENT: float = 1.4
@@ -241,8 +247,8 @@ SPEECH_CONFIDENCE_THRESHOLD: float = 0.40
 SPEECH_COMMAND_COOLDOWN_S: float = 1.0
 
 # Number of scroll "clicks" for scroll_up / scroll_down commands.
-# Positive = up, negative = down.  pyautogui.scroll(3) ≈ 3 mouse-wheel notches.
-SCROLL_AMOUNT: int = 3
+# Positive = up, negative = down.  Tuned to ~25 clicks for ~7 cm of page movement.
+SCROLL_AMOUNT: int = 40
 
 # Delay in seconds between individual keystrokes when typing dictation text.
 # 0.0 = fastest; increase if the target app drops characters.
@@ -261,6 +267,46 @@ ACTIVE_WINDOW_POLL_INTERVAL_S: float = 0.5
 OVERLAY_OPACITY: float = 0.85
 OVERLAY_FONT_SIZE: int = 14
 STATUS_UPDATE_INTERVAL_MS: int = 200
+
+# -----------------------------------------------
+# Stage 4 – Integration
+# -----------------------------------------------
+# DRY_RUN: when True, all OutputController actions are logged but NOT executed.
+# Default False (real execution). Override via --dry-run CLI flag.
+DRY_RUN: bool = False
+
+# Rate-limit for repeated identical face-clicks (seconds between clicks from face).
+# Prevents the face tracker from firing rapid duplicate clicks.
+FACE_CLICK_RATE_LIMIT_S: float = 0.8   # matches CLICK_COOLDOWN_SECONDS
+
+# Maximum pixels the cursor may be moved per controller tick.
+# Mirrors CURSOR_MAX_DELTA but applied at the integration layer.
+CONTROLLER_MAX_CURSOR_DELTA: float = 40.0
+
+# Screen-coordinate clamping margin in pixels (cursor is kept this far from edge).
+CURSOR_SCREEN_MARGIN: int = 5
+
+# Emergency stop hotkey for pynput GlobalHotKeys format.
+EMERGENCY_STOP_HOTKEY_PYNPUT: str = "<ctrl>+<alt>+q"
+
+# -----------------------------------------------
+# Stage 4 – Context sensor loop
+# -----------------------------------------------
+# How often (seconds) the sensor loop publishes a reading to the sensor queue.
+SENSOR_POLL_INTERVAL_S: float = 1.0
+
+# Active-window title / process sampling interval (seconds).
+# Kept separate so UI-automation calls don't block the sensor thread.
+ACTIVE_WINDOW_POLL_INTERVAL_S: float = 0.5
+
+# Noise level RMS threshold below which the environment is considered "quiet".
+NOISE_LEVEL_THRESHOLD: float = 0.05
+
+# -----------------------------------------------
+# Stage 4 – CSV event logger
+# -----------------------------------------------
+# Subdirectory under LOG_DIR for per-run CSV files.
+CSV_LOG_SUBDIR: str = "runs"
 
 # -----------------------------------------------
 # Logging

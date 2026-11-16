@@ -1,11 +1,11 @@
 """
-output/controller.py - Execute real Windows actions from speech commands.
+output/controller.py - Execute real Windows actions from speech and face events.
 
 Architecture
 ------------
-OutputController receives command strings (from SpeechEngine.get_latest_events())
-and maps them to mouse, keyboard, browser, and system actions via injectable
-backend functions.
+OutputController receives command strings (from SpeechEngine / Router) and
+face cursor/click events (from FaceTracker / Router), and maps them to mouse,
+keyboard, browser, and system actions via injectable backend functions.
 
 Backends are injected through the constructor so that tests can mock them
 without touching real hardware.
@@ -16,7 +16,15 @@ Safety
 - Confidence threshold: commands below SPEECH_CONFIDENCE_THRESHOLD are rejected.
 - Per-command cooldown prevents duplicate actions from a single utterance.
 - Emergency stop flag disables all execution instantly.
+- DRY_RUN mode: log actions without executing (config.DRY_RUN or constructor arg).
+- Cursor coordinates are clamped to the screen (never outside the display).
 - No destructive actions (shutdown, restart, delete, auto-submit).
+
+Stage 4 additions
+-----------------
+- move_cursor(dx, dy) : applies face cursor deltas to the real mouse position.
+- execute() accepts an optional source="face"|"speech" parameter for logging.
+- DRY_RUN default read from config.DRY_RUN.
 """
 
 import logging
@@ -31,7 +39,6 @@ import pyautogui
 import config
 
 logger = logging.getLogger("assistive.output_controller")
-
 
 # ---------------------------------------------------------------------------
 # Action result
@@ -142,7 +149,7 @@ class OutputController:
 
     def __init__(
         self,
-        dry_run: bool = False,
+        dry_run: bool = config.DRY_RUN,
         *,
         mouse_click: Optional[Callable] = None,
         mouse_double_click: Optional[Callable] = None,
@@ -166,6 +173,9 @@ class OutputController:
 
         # Per-command cooldown tracking: command_id -> last_execution_time
         self._last_exec_time: Dict[str, float] = {}
+
+        # Face-click rate-limit (separate from speech command cooldown)
+        self._last_face_click_time: float = 0.0
 
         # Build the command -> backend mapping
         self._actions: Dict[str, Callable] = {
@@ -216,6 +226,7 @@ class OutputController:
         self,
         command: str,
         confidence: float = 1.0,
+        source: str = "speech",
     ) -> ActionResult:
         """
         Execute a single command action.
@@ -224,6 +235,7 @@ class OutputController:
         ----------
         command    : normalised command ID from SpeechEngine (e.g. "click")
         confidence : Whisper speech confidence [0.0, 1.0]
+        source     : "speech" or "face" (used for logging only)
 
         Returns
         -------
@@ -303,6 +315,53 @@ class OutputController:
             msg = f"Action failed for '{command}': {exc}"
             logger.error(msg)
             return ActionResult(success=False, command=command, message=msg)
+
+    # ------------------------------------------------------------------
+    # Cursor movement (from face tracker)
+    # ------------------------------------------------------------------
+
+    def move_cursor(self, dx: float, dy: float) -> None:
+        """
+        Move the mouse cursor by (dx, dy) pixels relative to current position.
+
+        Safety
+        ------
+        - Blocked when emergency stop is active.
+        - Deltas are clamped to config.CONTROLLER_MAX_CURSOR_DELTA.
+        - Resulting coordinates are clamped to stay within the screen
+          (with a CURSOR_SCREEN_MARGIN pixel border).
+        - In DRY_RUN mode, the move is logged but not executed.
+
+        Parameters
+        ----------
+        dx : horizontal delta in pixels (positive = right)
+        dy : vertical delta in pixels (positive = down)
+        """
+        if self.is_stopped():
+            return
+
+        # Clamp deltas
+        max_d = config.CONTROLLER_MAX_CURSOR_DELTA
+        dx = max(-max_d, min(max_d, dx))
+        dy = max(-max_d, min(max_d, dy))
+
+        if dx == 0.0 and dy == 0.0:
+            return
+
+        if self._dry_run:
+            logger.debug("[DRY-RUN] move_cursor(dx=%.1f, dy=%.1f)", dx, dy)
+            return
+
+        try:
+            current_x, current_y = pyautogui.position()
+            screen_w, screen_h = pyautogui.size()
+            margin = config.CURSOR_SCREEN_MARGIN
+
+            new_x = int(round(max(margin, min(screen_w - margin, current_x + dx))))
+            new_y = int(round(max(margin, min(screen_h - margin, current_y + dy))))
+            pyautogui.moveTo(new_x, new_y)
+        except Exception as exc:
+            logger.debug("move_cursor failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Dictation typing
