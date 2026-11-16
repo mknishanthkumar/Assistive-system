@@ -94,6 +94,63 @@ def _normalize_text(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Whisper hallucination filter
+# ---------------------------------------------------------------------------
+# Known phrases Whisper produces when fed silence, noise, or very short audio.
+# These are common false outputs documented in openai-whisper and faster-whisper
+# issue trackers.  Match is performed on the normalised (lower-case, no-punct) text.
+_WHISPER_HALLUCINATION_PHRASES: frozenset = frozenset({
+    "",
+    "thank you",
+    "thank you for watching",
+    "thanks for watching",
+    "you",
+    "hmm",
+    "uh",
+    "um",
+    "okay",
+    "so",
+    "you know",
+    "please subscribe",
+    "subtitles by",
+    "blank audio",
+    "music",
+    "applause",
+    "laughter",
+    "silence",
+    "noise",
+})
+
+
+def _is_whisper_hallucination(text: str) -> bool:
+    """
+    Return True if *text* is a known Whisper hallucination / noise artefact.
+
+    Checks:
+    1. Normalised text is in the known hallucination set.
+    2. Normalised text is 1 character or fewer (single-letter noise).
+    3. Text is a Whisper bracket-encoded token (e.g. "[BLANK_AUDIO]", "[Music]").
+    4. Text consists entirely of punctuation / filler characters (alpha ratio < 0.2).
+    """
+    norm = _normalize_text(text)
+    if not norm or len(norm) <= 1:
+        return True
+    if norm in _WHISPER_HALLUCINATION_PHRASES:
+        return True
+    # Reject Whisper bracket-encoded tokens: text surrounded by [ ] or ( )
+    stripped = text.strip()
+    if (stripped.startswith("[") and stripped.endswith("]")) or \
+       (stripped.startswith("(") and stripped.endswith(")")):
+        return True
+    # Reject if more than 80 % of the original text is non-alphanumeric
+    # (e.g. "... ... ...")
+    alpha_ratio = sum(c.isalnum() for c in text) / max(len(text), 1)
+    if alpha_ratio < 0.2:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Command parser (fuzzy matching via difflib)
 # ---------------------------------------------------------------------------
 def parse_command(
@@ -449,16 +506,23 @@ class SpeechEngine:
             1,
             int(config.SPEECH_SILENCE_DURATION_S * 1000 / config.AUDIO_BLOCK_DURATION_MS),
         )
+        max_speech_frames = max(
+            min_speech_frames + 1,
+            int(config.SPEECH_MAX_DURATION_S * 1000 / config.AUDIO_BLOCK_DURATION_MS),
+        )
         trigger_frames = config.SPEECH_TRIGGER_FRAMES
         padding = config.SPEECH_PADDING_FRAMES
+        rms_threshold = config.SPEECH_RMS_THRESHOLD
 
         # Ring buffer for pre-speech onset padding
         ring_buffer: Deque[bytes] = collections.deque(maxlen=padding)
 
         logger.debug(
             "VAD loop started: min_speech=%d frames, silence_timeout=%d frames, "
-            "trigger=%d frames, padding=%d frames",
-            min_speech_frames, silence_timeout_frames, trigger_frames, padding,
+            "max_speech=%d frames, trigger=%d frames, padding=%d frames, "
+            "rms_threshold=%.4f",
+            min_speech_frames, silence_timeout_frames, max_speech_frames,
+            trigger_frames, padding, rms_threshold,
         )
 
         while self._running:
@@ -478,22 +542,29 @@ class SpeechEngine:
                 if self._noise_frames else 0.0
             )
 
-            # ── WebRTC VAD ────────────────────────────────────────────
+            # ── WebRTC VAD + RMS dual gate ─────────────────────────────
+            # WebRTC VAD alone classifies ANY non-silent audio (including ambient
+            # microphone noise with RMS ~0.005-0.015) as speech at aggressiveness<3.
+            # Combining VAD with an RMS energy gate suppresses those false positives:
+            # only frames that are both VAD=True AND loud enough count as speech.
             try:
-                is_speech = self._vad.is_speech(frame_data, config.AUDIO_SAMPLE_RATE)
+                vad_result = self._vad.is_speech(frame_data, config.AUDIO_SAMPLE_RATE)
             except Exception:
-                is_speech = False
+                vad_result = False
 
-            # Update shared state (non-event fields updated every frame)
+            is_active_speech = vad_result and (rms >= rms_threshold)
+
+            # speech_detected reflects confirmed speaking state (is_speaking), not
+            # raw per-frame VAD output, so the status display is accurate.
             with self._lock:
                 self._events["noise_level"] = avg_noise
-                self._events["speech_detected"] = is_speech
+                self._events["speech_detected"] = is_speaking
                 self._events["timestamp"] = time.monotonic()
 
             # ── State machine ─────────────────────────────────────────
             if not is_speaking:
                 # Waiting for speech onset
-                if is_speech:
+                if is_active_speech:
                     speech_trigger_count += 1
                     ring_buffer.append(frame_data)
                     if speech_trigger_count >= trigger_frames:
@@ -504,13 +575,37 @@ class SpeechEngine:
                         silence_count = 0
                         with self._lock:
                             self._events["vad_status"] = "speech"
+                            self._events["speech_detected"] = True
+                        logger.debug("Speech onset detected.")
                 else:
                     speech_trigger_count = 0
                     ring_buffer.append(frame_data)
             else:
                 # Currently in a speech segment
                 speech_frames.append(frame_data)
-                if not is_speech:
+
+                # Force-finalise if segment exceeds maximum allowed duration
+                if len(speech_frames) >= max_speech_frames:
+                    logger.debug(
+                        "Max segment duration reached (%d frames = %.1f s) — "
+                        "force-finalising.",
+                        len(speech_frames),
+                        len(speech_frames) * config.AUDIO_BLOCK_DURATION_MS / 1000,
+                    )
+                    segment_audio = b"".join(speech_frames)
+                    try:
+                        self._transcription_queue.put_nowait(segment_audio)
+                    except queue.Full:
+                        logger.warning("Transcription queue full – dropping max-duration segment.")
+                    with self._lock:
+                        self._events["vad_status"] = "processing"
+                    speech_frames = []
+                    silence_count = 0
+                    speech_trigger_count = 0
+                    is_speaking = False
+                    continue
+
+                if not is_active_speech:
                     silence_count += 1
                     if silence_count >= silence_timeout_frames:
                         # Segment complete
@@ -525,6 +620,11 @@ class SpeechEngine:
                                 )
                             with self._lock:
                                 self._events["vad_status"] = "processing"
+                            logger.debug(
+                                "Speech segment finalised: %d frames = %.1f s.",
+                                len(speech_frames),
+                                len(speech_frames) * config.AUDIO_BLOCK_DURATION_MS / 1000,
+                            )
                         else:
                             logger.debug(
                                 "Discarded short segment (%d frames < %d min).",
@@ -536,6 +636,7 @@ class SpeechEngine:
                         speech_trigger_count = 0
                         is_speaking = False
                         with self._lock:
+                            self._events["speech_detected"] = False
                             if self._events["vad_status"] != "processing":
                                 self._events["vad_status"] = "silence"
                 else:
@@ -571,7 +672,7 @@ class SpeechEngine:
             )
 
             try:
-                segments_gen, _info = self._whisper_model.transcribe(
+                segments_gen, info = self._whisper_model.transcribe(
                     audio_np,
                     language=config.WHISPER_LANGUAGE,
                     beam_size=5,
@@ -581,15 +682,34 @@ class SpeechEngine:
                 # Materialise generator (segments are lazy)
                 text_parts: List[str] = []
                 total_log_prob: float = 0.0
+                total_no_speech_prob: float = 0.0
                 seg_count: int = 0
 
                 for seg in segments_gen:
                     text_parts.append(seg.text)
                     logprob = getattr(seg, "avg_logprob", getattr(seg, "avg_log_prob", -0.5))
                     total_log_prob += logprob
+                    total_no_speech_prob += getattr(seg, "no_speech_prob", 0.0)
                     seg_count += 1
 
                 full_text = " ".join(text_parts).strip()
+
+                # ── no_speech_prob gate ───────────────────────────────
+                # Whisper's own speech-presence detector.  When the average
+                # no_speech_prob across segments is high, Whisper itself
+                # determined the audio contained no intelligible speech —
+                # discard immediately without routing.
+                if seg_count > 0:
+                    avg_no_speech_prob = total_no_speech_prob / seg_count
+                    if avg_no_speech_prob >= config.WHISPER_NO_SPEECH_THRESHOLD:
+                        logger.debug(
+                            "Discarding segment: avg_no_speech_prob=%.2f >= %.2f",
+                            avg_no_speech_prob, config.WHISPER_NO_SPEECH_THRESHOLD,
+                        )
+                        with self._lock:
+                            self._events["speech_confidence"] = 0.0
+                            self._events["vad_status"] = "silence"
+                        continue
 
                 # ── Confidence ────────────────────────────────────────
                 # avg_log_prob is typically in [-2.0, 0.0].
@@ -602,7 +722,14 @@ class SpeechEngine:
                 else:
                     confidence = 0.0
 
-                if not full_text:
+                # ── Empty / hallucination filter ──────────────────────
+                # Filter out empty transcriptions and known Whisper hallucinations
+                # that occur when it processes noise or very short audio.
+                if not full_text or _is_whisper_hallucination(full_text):
+                    logger.debug(
+                        "Discarding empty or hallucinated transcription: %r",
+                        full_text,
+                    )
                     with self._lock:
                         self._events["speech_confidence"] = 0.0
                         self._events["vad_status"] = "silence"

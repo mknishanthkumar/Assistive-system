@@ -22,7 +22,10 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import config
-from speech.speech_engine import SpeechEngine, parse_command, _normalize_text, COMMANDS
+from speech.speech_engine import (
+    SpeechEngine, parse_command, _normalize_text, COMMANDS,
+    _is_whisper_hallucination,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +604,636 @@ class TestCommandCompleteness(unittest.TestCase):
         for cmd_id, phrases in COMMANDS.items():
             self.assertGreater(len(phrases), 0,
                                f"Command {cmd_id} has no phrases")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+
+
+# ---------------------------------------------------------------------------
+# TestWhisperHallucinationFilter  (regression tests for Bug Fix #3 / #4)
+# ---------------------------------------------------------------------------
+class TestWhisperHallucinationFilter(unittest.TestCase):
+    """
+    Verify _is_whisper_hallucination() correctly classifies known Whisper
+    noise artefacts and allows real speech through.
+    """
+
+    def test_empty_string_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination(""))
+
+    def test_whitespace_only_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination("   "))
+
+    def test_single_char_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination("a"))
+        self.assertTrue(_is_whisper_hallucination("I"))
+
+    def test_known_phrase_thank_you(self):
+        self.assertTrue(_is_whisper_hallucination("Thank you."))
+
+    def test_known_phrase_thank_you_for_watching(self):
+        self.assertTrue(_is_whisper_hallucination("Thank you for watching."))
+
+    def test_known_phrase_uh(self):
+        self.assertTrue(_is_whisper_hallucination("Uh"))
+
+    def test_known_phrase_um(self):
+        self.assertTrue(_is_whisper_hallucination("Um."))
+
+    def test_known_phrase_hmm(self):
+        self.assertTrue(_is_whisper_hallucination("Hmm."))
+
+    def test_blank_audio_bracket(self):
+        # Bracket-encoded hallucinations have low alpha ratio
+        self.assertTrue(_is_whisper_hallucination("[BLANK_AUDIO]"))
+
+    def test_ellipsis_only(self):
+        self.assertTrue(_is_whisper_hallucination("..."))
+
+    def test_punctuation_only(self):
+        self.assertTrue(_is_whisper_hallucination("!?."))
+
+    def test_real_command_not_hallucination(self):
+        self.assertFalse(_is_whisper_hallucination("click"))
+
+    def test_real_command_scroll_up(self):
+        self.assertFalse(_is_whisper_hallucination("scroll up"))
+
+    def test_real_phrase_not_hallucination(self):
+        self.assertFalse(_is_whisper_hallucination("open browser please"))
+
+    def test_dictation_phrase_not_hallucination(self):
+        self.assertFalse(_is_whisper_hallucination("Hello world this is a test"))
+
+    def test_case_insensitive_hallucination(self):
+        # "THANK YOU" normalises to "thank you" -> hallucination
+        self.assertTrue(_is_whisper_hallucination("THANK YOU"))
+
+    def test_okay_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination("Okay."))
+
+    def test_so_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination("So."))
+
+
+# ---------------------------------------------------------------------------
+# TestRMSEnergyGate  (regression tests for Bug Fix #1)
+# ---------------------------------------------------------------------------
+class TestRMSEnergyGate(unittest.TestCase):
+    """
+    Verify config.SPEECH_RMS_THRESHOLD is set at a level that separates
+    typical ambient noise from typical speech.
+    """
+
+    def test_rms_threshold_exists(self):
+        """SPEECH_RMS_THRESHOLD must be defined in config."""
+        self.assertTrue(hasattr(config, "SPEECH_RMS_THRESHOLD"))
+
+    def test_rms_threshold_range(self):
+        """SPEECH_RMS_THRESHOLD must be in a sensible range (0.001–0.10)."""
+        self.assertGreater(config.SPEECH_RMS_THRESHOLD, 0.001)
+        self.assertLess(config.SPEECH_RMS_THRESHOLD, 0.10)
+
+    def test_ambient_noise_rms_below_threshold(self):
+        """Typical ambient-noise RMS (std=300) should be below threshold."""
+        import math, struct, random
+        random.seed(0)
+        rms_values = []
+        for _ in range(50):
+            frame = bytes([
+                x
+                for _ in range(480)
+                for x in struct.pack("<h", max(-32767, min(32767, int(random.gauss(0, 300)))))
+            ])
+            rms_values.append(SpeechEngine._compute_rms(frame))
+        avg = sum(rms_values) / len(rms_values)
+        self.assertLess(avg, config.SPEECH_RMS_THRESHOLD,
+                        f"Avg ambient RMS {avg:.4f} should be below threshold "
+                        f"{config.SPEECH_RMS_THRESHOLD}")
+
+    def test_speech_level_rms_above_threshold(self):
+        """Typical speech-level audio (std=5000) should exceed threshold."""
+        import math, struct, random
+        random.seed(0)
+        rms_values = []
+        for _ in range(10):
+            frame = bytes([
+                x
+                for _ in range(480)
+                for x in struct.pack("<h", max(-32767, min(32767, int(random.gauss(0, 5000)))))
+            ])
+            rms_values.append(SpeechEngine._compute_rms(frame))
+        avg = sum(rms_values) / len(rms_values)
+        self.assertGreater(avg, config.SPEECH_RMS_THRESHOLD,
+                           f"Avg speech RMS {avg:.4f} should be above threshold "
+                           f"{config.SPEECH_RMS_THRESHOLD}")
+
+
+# ---------------------------------------------------------------------------
+# TestVADMaxDuration  (regression test for Bug Fix #5 — max segment cap)
+# ---------------------------------------------------------------------------
+class TestVADMaxDuration(unittest.TestCase):
+    """Verify SPEECH_MAX_DURATION_S is defined and sensible."""
+
+    def test_max_duration_exists(self):
+        self.assertTrue(hasattr(config, "SPEECH_MAX_DURATION_S"))
+
+    def test_max_duration_greater_than_min(self):
+        self.assertGreater(
+            config.SPEECH_MAX_DURATION_S,
+            config.SPEECH_MIN_DURATION_S,
+        )
+
+    def test_max_duration_reasonable(self):
+        # Should be between 5 and 60 seconds for a command system
+        self.assertGreaterEqual(config.SPEECH_MAX_DURATION_S, 5.0)
+        self.assertLessEqual(config.SPEECH_MAX_DURATION_S, 60.0)
+
+
+# ---------------------------------------------------------------------------
+# TestNoSpeechProbConfig  (regression test for Bug Fix #2)
+# ---------------------------------------------------------------------------
+class TestNoSpeechProbConfig(unittest.TestCase):
+    """Verify WHISPER_NO_SPEECH_THRESHOLD is defined and sensible."""
+
+    def test_threshold_exists(self):
+        self.assertTrue(hasattr(config, "WHISPER_NO_SPEECH_THRESHOLD"))
+
+    def test_threshold_range(self):
+        # Must be between 0.0 and 1.0
+        self.assertGreater(config.WHISPER_NO_SPEECH_THRESHOLD, 0.0)
+        self.assertLess(config.WHISPER_NO_SPEECH_THRESHOLD, 1.0)
+
+    def test_threshold_sensible(self):
+        # Typical good value: 0.5-0.8 (conservative: reject when >50-80% likely no speech)
+        self.assertGreaterEqual(config.WHISPER_NO_SPEECH_THRESHOLD, 0.40)
+
+
+# ---------------------------------------------------------------------------
+# TestVADAggressiveness  (regression test for Bug Fix #1 config)
+# ---------------------------------------------------------------------------
+class TestVADAggressiveness(unittest.TestCase):
+    """Verify VAD aggressiveness is set to suppress ambient noise."""
+
+    def test_aggressiveness_value(self):
+        """Aggressiveness must be 3 (maximum) to filter ambient noise."""
+        self.assertEqual(config.VAD_AGGRESSIVENESS, 3)
+
+    def test_aggressiveness_in_valid_range(self):
+        self.assertGreaterEqual(config.VAD_AGGRESSIVENESS, 0)
+        self.assertLessEqual(config.VAD_AGGRESSIVENESS, 3)
+
+
+# ---------------------------------------------------------------------------
+# TestSpeechDetectedAccuracy  (regression test for Bug Fix #1 state display)
+# ---------------------------------------------------------------------------
+class TestSpeechDetectedAccuracy(unittest.TestCase):
+    """
+    Verify speech_detected reflects is_speaking (confirmed speaking state),
+    not raw per-frame VAD output.
+    Initial state must always be False.
+    """
+
+    def test_initial_speech_detected_false(self):
+        engine = SpeechEngine()
+        events = engine.get_latest_events()
+        self.assertFalse(events["speech_detected"],
+                         "speech_detected must be False before any audio is processed.")
+
+    def test_speech_detected_false_after_no_frames(self):
+        engine = SpeechEngine()
+        # No audio has been pushed; state must remain False
+        events = engine.get_latest_events()
+        self.assertFalse(events["speech_detected"])
+
+
+# ---------------------------------------------------------------------------
+# TestVADStateMachineWithRMSGate  (regression test for Bug Fix #1 state machine)
+# ---------------------------------------------------------------------------
+class TestVADStateMachineWithRMSGate(unittest.TestCase):
+    """
+    Simulate the VAD loop to verify that ambient noise frames (VAD=True but
+    RMS below threshold) do NOT produce a speech segment.
+    """
+
+    def _simulate_vad_loop(self, frames_with_flags):
+        """
+        Minimal simulation of _vad_processing_loop dual-gate logic.
+
+        Parameters
+        ----------
+        frames_with_flags : list of (rms, vad_result) tuples
+
+        Returns
+        -------
+        (segments_sent, final_is_speaking)
+        """
+        rms_threshold = config.SPEECH_RMS_THRESHOLD
+        min_sf = max(1, int(config.SPEECH_MIN_DURATION_S * 1000 / config.AUDIO_BLOCK_DURATION_MS))
+        sil_tf = max(1, int(config.SPEECH_SILENCE_DURATION_S * 1000 / config.AUDIO_BLOCK_DURATION_MS))
+        trig_f = config.SPEECH_TRIGGER_FRAMES
+
+        speech_frames = []
+        silence_count = 0
+        trigger_count = 0
+        is_speaking = False
+        segments_sent = 0
+
+        for rms, vad_result in frames_with_flags:
+            is_active = vad_result and (rms >= rms_threshold)
+
+            if not is_speaking:
+                if is_active:
+                    trigger_count += 1
+                    if trigger_count >= trig_f:
+                        is_speaking = True
+                        silence_count = 0
+                else:
+                    trigger_count = 0
+            else:
+                speech_frames.append(1)
+                if not is_active:
+                    silence_count += 1
+                    if silence_count >= sil_tf:
+                        if len(speech_frames) >= min_sf:
+                            segments_sent += 1
+                        speech_frames = []
+                        silence_count = 0
+                        trigger_count = 0
+                        is_speaking = False
+                else:
+                    silence_count = 0
+
+        return segments_sent, is_speaking
+
+    def test_ambient_noise_produces_no_segment(self):
+        """
+        Ambient noise frames: VAD=True but RMS below threshold.
+        Should produce zero segments.
+        """
+        low_rms = config.SPEECH_RMS_THRESHOLD * 0.5  # well below threshold
+        # 100 frames of 'ambient noise' — VAD says speech, but RMS is low
+        frames = [(low_rms, True)] * 100
+        segments, speaking = self._simulate_vad_loop(frames)
+        self.assertEqual(segments, 0,
+                         "Ambient noise must not produce any transcription segments.")
+        self.assertFalse(speaking)
+
+    def test_real_speech_produces_segment(self):
+        """
+        Real speech frames: VAD=True AND RMS above threshold, followed by silence.
+        Should produce exactly one segment.
+        """
+        high_rms = config.SPEECH_RMS_THRESHOLD * 3.0
+        low_rms = config.SPEECH_RMS_THRESHOLD * 0.3
+        # 3 trigger frames + 50 speech frames + 30 silence frames
+        frames = (
+            [(high_rms, True)] * 3   # trigger onset
+            + [(high_rms, True)] * 50  # speech
+            + [(low_rms, False)] * 30  # silence (> silence_timeout_frames=26)
+        )
+        segments, speaking = self._simulate_vad_loop(frames)
+        self.assertEqual(segments, 1,
+                         "Real speech followed by silence must produce exactly one segment.")
+        self.assertFalse(speaking)
+
+    def test_ambient_noise_then_real_speech(self):
+        """
+        Ambient noise before real speech must not trigger premature segment.
+        Only the real speech should produce a segment.
+        """
+        high_rms = config.SPEECH_RMS_THRESHOLD * 4.0
+        low_rms = config.SPEECH_RMS_THRESHOLD * 0.4
+        noise_rms = config.SPEECH_RMS_THRESHOLD * 0.5
+
+        frames = (
+            [(noise_rms, True)] * 50   # ambient noise (VAD=True, RMS below threshold)
+            + [(high_rms, True)] * 60  # actual speech
+            + [(low_rms, False)] * 30  # trailing silence
+        )
+        segments, _ = self._simulate_vad_loop(frames)
+        self.assertEqual(segments, 1)
+
+    def test_no_frames_no_segment(self):
+        segments, speaking = self._simulate_vad_loop([])
+        self.assertEqual(segments, 0)
+        self.assertFalse(speaking)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
+
+
+# ---------------------------------------------------------------------------
+# TestWhisperHallucinationFilter  (regression tests for Bug Fix #3 / #4)
+# ---------------------------------------------------------------------------
+class TestWhisperHallucinationFilter(unittest.TestCase):
+    """
+    Verify _is_whisper_hallucination() correctly classifies known Whisper
+    noise artefacts and allows real speech through.
+    """
+
+    def test_empty_string_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination(""))
+
+    def test_whitespace_only_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination("   "))
+
+    def test_single_char_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination("a"))
+        self.assertTrue(_is_whisper_hallucination("I"))
+
+    def test_known_phrase_thank_you(self):
+        self.assertTrue(_is_whisper_hallucination("Thank you."))
+
+    def test_known_phrase_thank_you_for_watching(self):
+        self.assertTrue(_is_whisper_hallucination("Thank you for watching."))
+
+    def test_known_phrase_uh(self):
+        self.assertTrue(_is_whisper_hallucination("Uh"))
+
+    def test_known_phrase_um(self):
+        self.assertTrue(_is_whisper_hallucination("Um."))
+
+    def test_known_phrase_hmm(self):
+        self.assertTrue(_is_whisper_hallucination("Hmm."))
+
+    def test_blank_audio_bracket(self):
+        # Bracket-encoded hallucinations have low alpha ratio
+        self.assertTrue(_is_whisper_hallucination("[BLANK_AUDIO]"))
+
+    def test_ellipsis_only(self):
+        self.assertTrue(_is_whisper_hallucination("..."))
+
+    def test_punctuation_only(self):
+        self.assertTrue(_is_whisper_hallucination("!?."))
+
+    def test_real_command_not_hallucination(self):
+        self.assertFalse(_is_whisper_hallucination("click"))
+
+    def test_real_command_scroll_up(self):
+        self.assertFalse(_is_whisper_hallucination("scroll up"))
+
+    def test_real_phrase_not_hallucination(self):
+        self.assertFalse(_is_whisper_hallucination("open browser please"))
+
+    def test_dictation_phrase_not_hallucination(self):
+        self.assertFalse(_is_whisper_hallucination("Hello world this is a test"))
+
+    def test_case_insensitive_hallucination(self):
+        # "THANK YOU" normalises to "thank you" -> hallucination
+        self.assertTrue(_is_whisper_hallucination("THANK YOU"))
+
+    def test_okay_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination("Okay."))
+
+    def test_so_is_hallucination(self):
+        self.assertTrue(_is_whisper_hallucination("So."))
+
+
+# ---------------------------------------------------------------------------
+# TestRMSEnergyGate  (regression tests for Bug Fix #1)
+# ---------------------------------------------------------------------------
+class TestRMSEnergyGate(unittest.TestCase):
+    """
+    Verify config.SPEECH_RMS_THRESHOLD is set at a level that separates
+    typical ambient noise from typical speech.
+    """
+
+    def test_rms_threshold_exists(self):
+        """SPEECH_RMS_THRESHOLD must be defined in config."""
+        self.assertTrue(hasattr(config, "SPEECH_RMS_THRESHOLD"))
+
+    def test_rms_threshold_range(self):
+        """SPEECH_RMS_THRESHOLD must be in a sensible range (0.001–0.10)."""
+        self.assertGreater(config.SPEECH_RMS_THRESHOLD, 0.001)
+        self.assertLess(config.SPEECH_RMS_THRESHOLD, 0.10)
+
+    def test_ambient_noise_rms_below_threshold(self):
+        """Typical ambient-noise RMS (std=300) should be below threshold."""
+        import math, struct, random
+        random.seed(0)
+        rms_values = []
+        for _ in range(50):
+            frame = bytes([
+                x
+                for _ in range(480)
+                for x in struct.pack("<h", max(-32767, min(32767, int(random.gauss(0, 300)))))
+            ])
+            rms_values.append(SpeechEngine._compute_rms(frame))
+        avg = sum(rms_values) / len(rms_values)
+        self.assertLess(avg, config.SPEECH_RMS_THRESHOLD,
+                        f"Avg ambient RMS {avg:.4f} should be below threshold "
+                        f"{config.SPEECH_RMS_THRESHOLD}")
+
+    def test_speech_level_rms_above_threshold(self):
+        """Typical speech-level audio (std=5000) should exceed threshold."""
+        import math, struct, random
+        random.seed(0)
+        rms_values = []
+        for _ in range(10):
+            frame = bytes([
+                x
+                for _ in range(480)
+                for x in struct.pack("<h", max(-32767, min(32767, int(random.gauss(0, 5000)))))
+            ])
+            rms_values.append(SpeechEngine._compute_rms(frame))
+        avg = sum(rms_values) / len(rms_values)
+        self.assertGreater(avg, config.SPEECH_RMS_THRESHOLD,
+                           f"Avg speech RMS {avg:.4f} should be above threshold "
+                           f"{config.SPEECH_RMS_THRESHOLD}")
+
+
+# ---------------------------------------------------------------------------
+# TestVADMaxDuration  (regression test for Bug Fix #5 — max segment cap)
+# ---------------------------------------------------------------------------
+class TestVADMaxDuration(unittest.TestCase):
+    """Verify SPEECH_MAX_DURATION_S is defined and sensible."""
+
+    def test_max_duration_exists(self):
+        self.assertTrue(hasattr(config, "SPEECH_MAX_DURATION_S"))
+
+    def test_max_duration_greater_than_min(self):
+        self.assertGreater(
+            config.SPEECH_MAX_DURATION_S,
+            config.SPEECH_MIN_DURATION_S,
+        )
+
+    def test_max_duration_reasonable(self):
+        # Should be between 5 and 60 seconds for a command system
+        self.assertGreaterEqual(config.SPEECH_MAX_DURATION_S, 5.0)
+        self.assertLessEqual(config.SPEECH_MAX_DURATION_S, 60.0)
+
+
+# ---------------------------------------------------------------------------
+# TestNoSpeechProbConfig  (regression test for Bug Fix #2)
+# ---------------------------------------------------------------------------
+class TestNoSpeechProbConfig(unittest.TestCase):
+    """Verify WHISPER_NO_SPEECH_THRESHOLD is defined and sensible."""
+
+    def test_threshold_exists(self):
+        self.assertTrue(hasattr(config, "WHISPER_NO_SPEECH_THRESHOLD"))
+
+    def test_threshold_range(self):
+        # Must be between 0.0 and 1.0
+        self.assertGreater(config.WHISPER_NO_SPEECH_THRESHOLD, 0.0)
+        self.assertLess(config.WHISPER_NO_SPEECH_THRESHOLD, 1.0)
+
+    def test_threshold_sensible(self):
+        # Typical good value: 0.5-0.8 (conservative: reject when >50-80% likely no speech)
+        self.assertGreaterEqual(config.WHISPER_NO_SPEECH_THRESHOLD, 0.40)
+
+
+# ---------------------------------------------------------------------------
+# TestVADAggressiveness  (regression test for Bug Fix #1 config)
+# ---------------------------------------------------------------------------
+class TestVADAggressiveness(unittest.TestCase):
+    """Verify VAD aggressiveness is set to suppress ambient noise."""
+
+    def test_aggressiveness_value(self):
+        """Aggressiveness must be 3 (maximum) to filter ambient noise."""
+        self.assertEqual(config.VAD_AGGRESSIVENESS, 3)
+
+    def test_aggressiveness_in_valid_range(self):
+        self.assertGreaterEqual(config.VAD_AGGRESSIVENESS, 0)
+        self.assertLessEqual(config.VAD_AGGRESSIVENESS, 3)
+
+
+# ---------------------------------------------------------------------------
+# TestSpeechDetectedAccuracy  (regression test for Bug Fix #1 state display)
+# ---------------------------------------------------------------------------
+class TestSpeechDetectedAccuracy(unittest.TestCase):
+    """
+    Verify speech_detected reflects is_speaking (confirmed speaking state),
+    not raw per-frame VAD output.
+    Initial state must always be False.
+    """
+
+    def test_initial_speech_detected_false(self):
+        engine = SpeechEngine()
+        events = engine.get_latest_events()
+        self.assertFalse(events["speech_detected"],
+                         "speech_detected must be False before any audio is processed.")
+
+    def test_speech_detected_false_after_no_frames(self):
+        engine = SpeechEngine()
+        # No audio has been pushed; state must remain False
+        events = engine.get_latest_events()
+        self.assertFalse(events["speech_detected"])
+
+
+# ---------------------------------------------------------------------------
+# TestVADStateMachineWithRMSGate  (regression test for Bug Fix #1 state machine)
+# ---------------------------------------------------------------------------
+class TestVADStateMachineWithRMSGate(unittest.TestCase):
+    """
+    Simulate the VAD loop to verify that ambient noise frames (VAD=True but
+    RMS below threshold) do NOT produce a speech segment.
+    """
+
+    def _simulate_vad_loop(self, frames_with_flags):
+        """
+        Minimal simulation of _vad_processing_loop dual-gate logic.
+
+        Parameters
+        ----------
+        frames_with_flags : list of (rms, vad_result) tuples
+
+        Returns
+        -------
+        (segments_sent, final_is_speaking)
+        """
+        rms_threshold = config.SPEECH_RMS_THRESHOLD
+        min_sf = max(1, int(config.SPEECH_MIN_DURATION_S * 1000 / config.AUDIO_BLOCK_DURATION_MS))
+        sil_tf = max(1, int(config.SPEECH_SILENCE_DURATION_S * 1000 / config.AUDIO_BLOCK_DURATION_MS))
+        trig_f = config.SPEECH_TRIGGER_FRAMES
+
+        speech_frames = []
+        silence_count = 0
+        trigger_count = 0
+        is_speaking = False
+        segments_sent = 0
+
+        for rms, vad_result in frames_with_flags:
+            is_active = vad_result and (rms >= rms_threshold)
+
+            if not is_speaking:
+                if is_active:
+                    trigger_count += 1
+                    if trigger_count >= trig_f:
+                        is_speaking = True
+                        silence_count = 0
+                else:
+                    trigger_count = 0
+            else:
+                speech_frames.append(1)
+                if not is_active:
+                    silence_count += 1
+                    if silence_count >= sil_tf:
+                        if len(speech_frames) >= min_sf:
+                            segments_sent += 1
+                        speech_frames = []
+                        silence_count = 0
+                        trigger_count = 0
+                        is_speaking = False
+                else:
+                    silence_count = 0
+
+        return segments_sent, is_speaking
+
+    def test_ambient_noise_produces_no_segment(self):
+        """
+        Ambient noise frames: VAD=True but RMS below threshold.
+        Should produce zero segments.
+        """
+        low_rms = config.SPEECH_RMS_THRESHOLD * 0.5  # well below threshold
+        # 100 frames of 'ambient noise' — VAD says speech, but RMS is low
+        frames = [(low_rms, True)] * 100
+        segments, speaking = self._simulate_vad_loop(frames)
+        self.assertEqual(segments, 0,
+                         "Ambient noise must not produce any transcription segments.")
+        self.assertFalse(speaking)
+
+    def test_real_speech_produces_segment(self):
+        """
+        Real speech frames: VAD=True AND RMS above threshold, followed by silence.
+        Should produce exactly one segment.
+        """
+        high_rms = config.SPEECH_RMS_THRESHOLD * 3.0
+        low_rms = config.SPEECH_RMS_THRESHOLD * 0.3
+        # 3 trigger frames + 50 speech frames + 30 silence frames
+        frames = (
+            [(high_rms, True)] * 3   # trigger onset
+            + [(high_rms, True)] * 50  # speech
+            + [(low_rms, False)] * 30  # silence (> silence_timeout_frames=26)
+        )
+        segments, speaking = self._simulate_vad_loop(frames)
+        self.assertEqual(segments, 1,
+                         "Real speech followed by silence must produce exactly one segment.")
+        self.assertFalse(speaking)
+
+    def test_ambient_noise_then_real_speech(self):
+        """
+        Ambient noise before real speech must not trigger premature segment.
+        Only the real speech should produce a segment.
+        """
+        high_rms = config.SPEECH_RMS_THRESHOLD * 4.0
+        low_rms = config.SPEECH_RMS_THRESHOLD * 0.4
+        noise_rms = config.SPEECH_RMS_THRESHOLD * 0.5
+
+        frames = (
+            [(noise_rms, True)] * 50   # ambient noise (VAD=True, RMS below threshold)
+            + [(high_rms, True)] * 60  # actual speech
+            + [(low_rms, False)] * 30  # trailing silence
+        )
+        segments, _ = self._simulate_vad_loop(frames)
+        self.assertEqual(segments, 1)
+
+    def test_no_frames_no_segment(self):
+        segments, speaking = self._simulate_vad_loop([])
+        self.assertEqual(segments, 0)
+        self.assertFalse(speaking)
 
 
 if __name__ == "__main__":

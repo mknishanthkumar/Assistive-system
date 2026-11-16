@@ -181,7 +181,8 @@ AUDIO_BLOCK_DURATION_MS: int = 30         # VAD frame size (10, 20, or 30 ms)
 # -----------------------------------------------
 # Stage 3 - Voice Activity Detection (WebRTC VAD)
 # -----------------------------------------------
-VAD_AGGRESSIVENESS: int = 2               # 0-3, higher = more aggressive filtering
+VAD_AGGRESSIVENESS: int = 3               # 0-3, higher = more aggressive filtering
+                                          # Set to 3 to maximally suppress ambient noise frames.
 
 # Minimum number of consecutive speech frames needed to begin a speech segment.
 # Prevents single noisy frames from starting a segment.  3 frames × 30 ms = 90 ms.
@@ -189,7 +190,7 @@ SPEECH_TRIGGER_FRAMES: int = 3
 
 # Minimum total duration (seconds) of a speech segment to be sent for transcription.
 # Segments shorter than this are discarded as noise or throat-clearing.
-SPEECH_MIN_DURATION_S: float = 0.4
+SPEECH_MIN_DURATION_S: float = 0.5
 
 # Duration (seconds) of continuous silence needed AFTER speech to finalise a segment.
 # Too short → sentence gets split.  Too long → user waits before result appears.
@@ -198,6 +199,21 @@ SPEECH_SILENCE_DURATION_S: float = 0.8
 # Number of pre-speech frames kept in a ring buffer and prepended to the segment.
 # Captures the onset of speech that VAD may initially miss.
 SPEECH_PADDING_FRAMES: int = 10
+
+# Minimum RMS energy (0.0–1.0) a frame must have for the VAD result to be treated as
+# real speech.  This dual-gates the WebRTC VAD so that ambient noise — which VAD often
+# mis-classifies as speech — is rejected before it enters the speech-segment state machine.
+# Typical ambient noise RMS: 0.001–0.015.  Typical quiet speech RMS: 0.03–0.10.
+SPEECH_RMS_THRESHOLD: float = 0.02
+
+# Maximum duration (seconds) of a single speech segment before it is forcibly finalised
+# and sent for transcription.  Prevents an ever-growing buffer when background noise
+# prevents the silence timeout from being reached.
+SPEECH_MAX_DURATION_S: float = 15.0
+
+# Whisper no_speech_prob above this value → segment is considered non-speech and
+# discarded without command matching or dictation routing.
+WHISPER_NO_SPEECH_THRESHOLD: float = 0.60
 
 # -----------------------------------------------
 # Stage 3 - Command parser (fuzzy matching)

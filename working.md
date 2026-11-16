@@ -10,8 +10,8 @@
 | Field             | Value                                    |
 |-------------------|------------------------------------------|
 | **Current Stage** | Stage 3 – Speech Module + Action Execution |
-| **Stage Status**  | COMPLETE                                 |
-| **Last Updated**  | 2026-11-03                               |
+| **Stage Status**  | DEBUGGED & COMPLETE                      |
+| **Last Updated**  | 2026-11-13                               |
 | **Python**        | 3.11.0 (64-bit, MSC v.1933)    |
 | **Venv**          | .venv                          |
 | **OS**            | Windows (win32)                |
@@ -125,6 +125,7 @@ Demo script applies events to real cursor via pyautogui.
 | 7 | S3.12 | `test_extra_words_around_command` failed — "please click now" did not match "click" | Length-ratio containment check: 5/16 = 0.31 fell below 0.4 threshold | Replaced with whole-word subsequence matching (score = 0.90 when phrase found as contiguous words) | PASS (63/63) |
 | 8 | S3.14 | Live transcription warning: `'Segment' object has no attribute 'avg_log_prob'` | Faster-Whisper dataclass field is named `avg_logprob` (no underscore) | Used `getattr(seg, 'avg_logprob', ...)` with fallback; confidence correctly calculated | PASS (64/64, 103 total) |
 | 9 | S3-Action | 9 speech tests failed after COMMANDS dict update | Old tests referenced removed commands (next_slide, previous_slide, go_back, pause, resume, switch_to_face, switch_to_voice) | Updated tests to use new command IDs; updated completeness assertion from 15 to 17 | PASS (151 total) |
+| 10 | S3-Debug | speech=YES always, conf=0.00, no commands executed | **Root cause: 4 bugs in VAD loop + transcription.** (a) WebRTC VAD at aggressiveness=2 flags ALL ambient noise as speech; no RMS energy gate. (b) `speech_detected` set from raw VAD output per-frame, not from confirmed speaking state. (c) No `no_speech_prob` gate on Whisper segments. (d) No max segment cap. (e) No hallucination filter on Whisper output. | (a) Added dual RMS+VAD gate (`is_active_speech = vad AND rms >= SPEECH_RMS_THRESHOLD`). (b) `speech_detected` now reflects `is_speaking` (confirmed state). (c) Added `no_speech_prob >= WHISPER_NO_SPEECH_THRESHOLD` early-discard. (d) Added max segment duration cap (`SPEECH_MAX_DURATION_S = 15s`). (e) Added `_is_whisper_hallucination()` filter. (f) VAD aggressiveness raised to 3. (g) `SPEECH_MIN_DURATION_S` raised to 0.5s. | PASS (187 total) |
 
 ---
 
@@ -302,4 +303,5 @@ Execute recognised commands as real Windows actions via OutputController.
 
 **Awaiting user approval of Stage 3 Action Execution.**
 Physical demo verification of `tests/demo_speech.py` is pending (requires manual microphone + action test).
+
 
