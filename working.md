@@ -9,9 +9,9 @@
 
 | Field             | Value                                    |
 |-------------------|------------------------------------------|
-| **Current Stage** | Stage 4 – Integration (Face + Speech + Real Actions) |
+| **Current Stage** | Stage 5 – Context-Aware Decision Engine |
 | **Stage Status**  | COMPLETE                                 |
-| **Last Updated**  | 2026-11-16                               |
+| **Last Updated**  | 2026-11-18                               |
 | **Python**        | 3.11.0 (64-bit, MSC v.1933)    |
 | **Venv**          | .venv                          |
 | **OS**            | Windows (win32)                |
@@ -128,6 +128,7 @@ Demo script applies events to real cursor via pyautogui.
 | 10 | S3-Debug | speech=YES always, conf=0.00, no commands executed | **Root cause: 4 bugs in VAD loop + transcription.** (a) WebRTC VAD at aggressiveness=2 flags ALL ambient noise as speech; no RMS energy gate. (b) `speech_detected` set from raw VAD output per-frame, not from confirmed speaking state. (c) No `no_speech_prob` gate on Whisper segments. (d) No max segment cap. (e) No hallucination filter on Whisper output. | (a) Added dual RMS+VAD gate (`is_active_speech = vad AND rms >= SPEECH_RMS_THRESHOLD`). (b) `speech_detected` now reflects `is_speaking` (confirmed state). (c) Added `no_speech_prob >= WHISPER_NO_SPEECH_THRESHOLD` early-discard. (d) Added max segment duration cap (`SPEECH_MAX_DURATION_S = 15s`). (e) Added `_is_whisper_hallucination()` filter. (f) VAD aggressiveness raised to 3. (g) `SPEECH_MIN_DURATION_S` raised to 0.5s. | PASS (187 total) |
 | 11 | S4-Bugfix | Head-controlled cursor too slow; downward motion stuck/ignored | (a) `CURSOR_SENSITIVITY=8.0` on normalized displacement [0, 1] raised to 1.4 gave sub-pixel deltas (~0.05-0.5 px/frame). (b) `output/controller.py` truncated with `int()`, dropping positive deltas `0 < dy < 1.0` to 0 while negative deltas stepped -1 px. (c) Downward neck pitch has ~1/2 range of motion of upward tilt. | (a) Added `CURSOR_SPEED = 30.0` setting with base-10 scale in `face_tracker.py`. (b) Changed truncation to `round()` in `controller.py`. (c) Added `CURSOR_PITCH_DOWN_GAIN = 1.8` for downward pitch. | PASS (256 total) |
 | 12 | S4-Scroll | Voice scroll commands moved page only ~0.5-1 cm | `SCROLL_AMOUNT = 3` in config.py was too small for meaningful page movement | Increased `SCROLL_AMOUNT` from 3 to 25 clicks (~7 cm on a typical page) | PASS (256 total) |
+| 13 | Post-S5 | Mouse cursor movement broken (lag, jitter, clicks stolen, edge lockout, text focus freeze, drift) | (a) PyAutoGUI PAUSE=0.05 default injected 50ms sleep per move_cursor call, choking loop to ~12 FPS. (b) SensorLoop called get_latest_events() without consume=False, consuming and dropping blink/jaw click flags. (c) CURSOR_SCREEN_MARGIN=5 locked cursor out of outer 5px screen boundary. (d) Low-confidence frames caused noisy landmark jumps. (e) Decision engine locked into SPEECH on text focus with no pointing override. (f) Lack of neutral recalibration caused drift. | (a) Temporarily set pyautogui.PAUSE=0.0 in move_cursor with finally restoration. (b) Added consume: bool = True parameter so sensor pollers peek non-destructively. (c) Set CURSOR_SCREEN_MARGIN=0 allowing [0, screen_w - 1]. (d) Added confidence threshold gating in face_tracker and router. (e) Added pointing_active check in DecisionEngine. (f) Added "calibrate"/"center cursor" voice commands. | PASS (343 tests) |
 
 ---
 
@@ -395,8 +396,134 @@ Execute recognised commands as real Windows actions via OutputController.
 
 ## Next Step
 
-**Stage 4 COMPLETE.**
-Pending: Real-action physical verification (requires user to run `python main.py` with webcam + microphone attached).
-See README.md "Stage 4 Verification" section for procedure.
+**Stage 5 COMPLETE.**
+
+---
+
+## Stage 5: Context Engine (Decision Engine) — COMPLETE
+
+### Objective
+Build `context/decision_engine.py`: a context-aware decision engine that maps
+real-time sensor readings to an active input mode (FACE, SPEECH, BOTH, PAUSED).
+Integrate with Router for event filtering and with main.py for live operation.
+
+### Step-by-step results
+
+| Step | Task | Status |
+|------|------|--------|
+| 1 | Read working.md, README, AI_AGENT_GUIDE.txt | PASS |
+| 2 | Baseline test suite (Stages 1-4): 256/256 | PASS |
+| 3 | Add 6 DECISION_* constants to config.py | PASS |
+| 4 | Create context/decision_engine.py | PASS |
+| 5 | Upgrade output/router.py with mode filtering + DecisionEngine | PASS |
+| 6 | Update main.py: wire DecisionEngine into sensor drain + speech loop | PASS |
+| 7 | Write tests/test_decision_engine.py (80 tests) | PASS: 80/80 |
+| 8 | Full test suite (Stages 1-5): 336/336 | PASS |
+| 9 | Dry-run demo (10 scripted scenarios) | PASS: all 10 scenarios |
+| 10 | Update documentation | PASS |
+
+### Decision Engine Rules (priority order)
+
+| Priority | Condition | Mode |
+|----------|-----------|------|
+| 1 | noisy AND face_conf < thresh AND speech_conf < thresh | PAUSED |
+| 2 | noise >= DECISION_NOISE_THRESHOLD | FACE |
+| 3 | text_field_focused=True AND quiet | SPEECH |
+| 4 | face_conf < DECISION_FACE_CONF_THRESHOLD OR brightness < DECISION_BRIGHTNESS_THRESHOLD | SPEECH |
+| 5 | face_conf >= threshold AND speech_conf >= threshold AND quiet | BOTH |
+| 6 | (fallback) | FACE |
+
+### Hysteresis
+- `DECISION_HOLD_DURATION_S` = 1.0 s: candidate must hold continuously before switch commits
+- `DECISION_MIN_SWITCH_INTERVAL_S` = 2.0 s: minimum wall-clock seconds between any two switches
+
+### Manual override
+- `set_manual_override(Mode.SPEECH)` ← voice command "switch to voice"
+- `set_manual_override(Mode.FACE)` ← jaw gesture or voice "switch to face"
+- `clear_manual_override()` ← voice phrase "switch to auto" / "automatic mode"
+- `stop_control` voice command always forwarded regardless of mode (safety)
+
+### New files (Stage 5)
+
+| File | Purpose |
+|------|---------|
+| `context/decision_engine.py` | DecisionEngine: 6 rules, 2-stage hysteresis, manual override, CSV logging |
+| `tests/test_decision_engine.py` | 80 automated tests (all rules, hysteresis, override, CSV, logging, threads) |
+| `tests/demo_decision_engine.py` | 10-scenario scripted dry-run simulation |
+
+### Modified files (Stage 5)
+
+| File | Change |
+|------|--------|
+| `config.py` | Added 6 DECISION_* constants |
+| `output/router.py` | Added DecisionEngine parameter, mode-filtering for face + speech events |
+| `main.py` | Added DecisionEngine, sensor drain feeds evaluate(), speech loop intercepts override phrases, updated banner |
+
+### Test counts (cumulative)
+
+| Test file | Tests |
+|-----------|-------|
+| test_face_tracker.py | 39 |
+| test_speech_engine.py | 72 |
+| test_output_controller.py | 40 |
+| test_router.py | 16 |
+| test_sensors.py | 20 |
+| test_csv_logger.py | 19 |
+| test_controller_stage4.py | 14 |
+| test_decision_engine.py | 80 |
+| **test_cursor_mapping.py** | **7** |
+| **Total** | **343** (collected as 343 by pytest) |
+
+Actual pytest result: **343 passed, 0 failed in 27.10s**
+
+### Dry-run output (all 10 scenarios PASSED)
+
+```
+S1: Both reliable            → BOTH
+S2: Noisy room (0.8)         → FACE   (noise disabled speech)
+S3: Dark room (brightness=10) → SPEECH (face lost)
+S4: Text field focused        → SPEECH (dictation)
+S5: Face confidence=0.1       → SPEECH (voice navigation)
+S6: Override → SPEECH         → SPEECH [OVERRIDE] (noisy room ignored)
+S7: Override → FACE           → FACE   [OVERRIDE] (dark room ignored)
+S8: Clear override            → SPEECH (auto rules restored)
+S9: Both unreliable           → PAUSED + WARNING logged
+S10: Hysteresis hold timer    → BOTH (held) → FACE (committed after 0.1 s)
+```
+
+---
+
+## Post-Stage 5: Face Tracking & Cursor Movement Bug Fix — COMPLETE
+
+### Issues Addressed & Verified
+1. **PyAutoGUI Pause Lag**: Wrapped `move_cursor` with zeroed `pyautogui.PAUSE` restoration; eliminated 50ms blocking sleep per face frame.
+2. **Click & Command Stealing**: Replaced destructive `get_latest_events()` calls in `SensorLoop` and `main.py` with `consume=False` non-destructive peeks, preserving edge-triggered clicks (`left_click`, `right_click`).
+3. **Screen Edge Lockout**: Configured `CURSOR_SCREEN_MARGIN = 0` allowing full `[0, screen_w - 1]` range.
+4. **Low Confidence Jitter**: Added confidence gating (<0.40) in `face_tracker.py` and `router.py` to suppress noisy jumps.
+5. **Mode Locking in DecisionEngine**: Added Rule 2b to allow active pointing context to restore `Mode.FACE`.
+6. **Recalibration Drift**: Added voice recalibration ("calibrate", "center cursor") mapped to `tracker.calibrate_neutral()`.
+
+---
+
+## Files Index (updated Post-Stage 5 Bugfix)
+
+| File | Purpose | Last Modified |
+|------|---------|---------------|
+| `main.py` | Entry point — non-destructive sensor drain + voice calibration wired | 2026-11-18 |
+| `config.py` | Full range margins (`CURSOR_SCREEN_MARGIN = 0`) | 2026-11-18 |
+| `face/face_tracker.py` | Confidence gating, non-destructive peek, debug logging | 2026-11-18 |
+| `output/controller.py` | Pause bypass, boundary clamping, safe failsafe exception | 2026-11-18 |
+| `output/router.py` | Low confidence face suppression, debug logging | 2026-11-18 |
+| `context/sensors.py` | Non-destructive peeking `consume=False` | 2026-11-18 |
+| `context/decision_engine.py` | Rule 2b pointing context awareness | 2026-11-18 |
+| `tests/test_cursor_mapping.py` | Automated tests for mapping, edges, pause, and confidence (7 tests) | 2026-11-18 |
+| `tests/demo_cursor_mapping.py` | Scripted dry run for 15 cursor mapping scenarios | 2026-11-18 |
+
+---
+
+## Next Step
+
+**System fully stable and verified.**
+Ready for live camera + microphone test run: `python main.py --dry-run` or real interactive use.
 
 

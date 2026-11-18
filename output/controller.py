@@ -356,12 +356,30 @@ class OutputController:
             current_x, current_y = pyautogui.position()
             screen_w, screen_h = pyautogui.size()
             margin = config.CURSOR_SCREEN_MARGIN
+            max_x = screen_w - 1 if margin == 0 else screen_w - margin
+            max_y = screen_h - 1 if margin == 0 else screen_h - margin
 
-            new_x = int(round(max(margin, min(screen_w - margin, current_x + dx))))
-            new_y = int(round(max(margin, min(screen_h - margin, current_y + dy))))
-            pyautogui.moveTo(new_x, new_y)
+            new_x = int(round(max(margin, min(max_x, current_x + dx))))
+            new_y = int(round(max(margin, min(max_y, current_y + dy))))
+
+            # Temporarily set PAUSE to 0.0 to prevent 50ms pause delay on cursor movements
+            old_pause = getattr(pyautogui, "PAUSE", 0.0)
+            try:
+                pyautogui.PAUSE = 0.0
+                pyautogui.moveTo(new_x, new_y)
+            finally:
+                pyautogui.PAUSE = old_pause
+
+            logger.debug(
+                "Cursor move: delta=(%.1f, %.1f) | current=(%d, %d) -> mapped=(%d, %d) [screen: %dx%d]",
+                dx, dy, current_x, current_y, new_x, new_y, screen_w, screen_h,
+            )
         except Exception as exc:
-            logger.debug("move_cursor failed: %s", exc)
+            if exc.__class__.__name__ == "FailSafeException":
+                logger.warning("PyAutoGUI fail-safe triggered in move_cursor.")
+                self.trigger_emergency_stop()
+            else:
+                logger.debug("move_cursor failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Dictation typing

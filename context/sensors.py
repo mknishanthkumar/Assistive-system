@@ -216,7 +216,11 @@ class SensorLoop:
         noise_level: float = 0.0
         try:
             if self._speech is not None:
-                evts = self._speech.get_latest_events()
+                # Use consume=False so sensor polling does not steal speech commands
+                try:
+                    evts = self._speech.get_latest_events(consume=False)
+                except TypeError:
+                    evts = self._speech.get_latest_events()
                 noise_level = float(evts.get("noise_level", 0.0))
         except Exception:
             noise_level = 0.0
@@ -226,7 +230,11 @@ class SensorLoop:
         frame_brightness: float = 0.0
         try:
             if self._face is not None:
-                evts = self._face.get_latest_events()
+                # Use consume=False so sensor polling does not steal click gestures
+                try:
+                    evts = self._face.get_latest_events(consume=False)
+                except TypeError:
+                    evts = self._face.get_latest_events()
                 face_confidence = float(evts.get("face_confidence", 0.0))
                 dbg = evts.get("debug", {})
                 frame_brightness = float(dbg.get("brightness", 0.0))

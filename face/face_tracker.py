@@ -251,18 +251,26 @@ class FaceTracker:
 
         logger.info("FaceTracker stopped and resources released.")
 
-    def get_latest_events(self) -> Dict[str, Any]:
+    def get_latest_events(self, consume: bool = True) -> Dict[str, Any]:
         """
         Return a shallow copy of the latest event dict.
 
         Thread-safe: acquires the internal lock briefly then returns a copy
         so the caller can inspect values without holding the lock.
+
+        Parameters
+        ----------
+        consume : bool
+            If True (default), resets edge-triggered click flags. If False,
+            peeks at the latest events without consuming clicks (useful for
+            sensor loops and monitoring).
         """
         with self._lock:
             snapshot = dict(self._events)
-            # Click flags are edge-triggered: consumed on first read
-            self._events["left_click"] = False
-            self._events["right_click"] = False
+            if consume:
+                # Click flags are edge-triggered: consumed on first read
+                self._events["left_click"] = False
+                self._events["right_click"] = False
         return snapshot
 
     def get_latest_frame(self) -> Optional[np.ndarray]:
@@ -474,8 +482,6 @@ class FaceTracker:
         delta_x = float(np.clip(delta_x, -max_d, max_d))
         delta_y = float(np.clip(delta_y, -max_d, max_d))
 
-        events["cursor_delta_x"] = delta_x
-        events["cursor_delta_y"] = delta_y
         events["head_position"] = {"x": nose_x, "y": nose_y}
 
         # ----------------------------------------------------------------
@@ -505,19 +511,42 @@ class FaceTracker:
         left_click = self._update_blink_gesture(
             blink_left_score, blink_right_score, now
         )
-        events["left_click"] = left_click
 
         # ----------------------------------------------------------------
         # Gesture: Jaw open → right-click
         # ----------------------------------------------------------------
         right_click = self._update_jaw_gesture(jaw_open_score, now)
-        events["right_click"] = right_click
 
         # ----------------------------------------------------------------
         # Face confidence score
         # ----------------------------------------------------------------
-        events["face_confidence"] = self._compute_confidence(brightness, now)
+        confidence = self._compute_confidence(brightness, now)
+        events["face_confidence"] = confidence
         events["debug"] = debug
+
+        # Suppress cursor deltas and clicks if tracking confidence is low
+        min_conf = getattr(config, "DECISION_FACE_CONF_THRESHOLD", 0.4)
+        if confidence < min_conf:
+            delta_x = 0.0
+            delta_y = 0.0
+            left_click = False
+            right_click = False
+            logger.debug(
+                "FaceTracker low confidence (%.2f < %.2f): deltas suppressed",
+                confidence, min_conf,
+            )
+
+        events["cursor_delta_x"] = delta_x
+        events["cursor_delta_y"] = delta_y
+        events["left_click"] = left_click
+        events["right_click"] = right_click
+
+        logger.debug(
+            "FaceTracker landmark: nose=(%.4f, %.4f), neutral=(%.4f, %.4f), "
+            "disp=(%.4f, %.4f) -> delta=(%.1f, %.1f), conf=%.2f",
+            nose_x, nose_y, self._neutral_x, self._neutral_y,
+            disp_x, disp_y, delta_x, delta_y, confidence,
+        )
 
         return events
 

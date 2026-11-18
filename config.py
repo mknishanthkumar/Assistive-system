@@ -262,6 +262,35 @@ NOISE_LEVEL_THRESHOLD: float = 0.05       # RMS threshold for "noisy env"
 ACTIVE_WINDOW_POLL_INTERVAL_S: float = 0.5
 
 # -----------------------------------------------
+# Stage 5 – Decision engine
+# -----------------------------------------------
+# Minimum wall-clock seconds that must have elapsed between any two
+# automatic mode switches.  Prevents flapping when sensor values hover
+# near a threshold boundary.
+DECISION_MIN_SWITCH_INTERVAL_S: float = 2.0
+
+# A new rule must hold continuously for this many seconds before the engine
+# commits to a mode switch.  Guards against transient sensor spikes.
+DECISION_HOLD_DURATION_S: float = 1.0
+
+# Face-confidence score below which we consider the face "lost" for the
+# purposes of mode selection (independent of FACE_MIN_DETECTION_CONFIDENCE).
+DECISION_FACE_CONF_THRESHOLD: float = 0.4
+
+# Noise RMS level at or above which the environment is considered "noisy"
+# and voice commands are disabled.  Shares the domain with NOISE_LEVEL_THRESHOLD
+# but kept separate so each subsystem can be tuned independently.
+DECISION_NOISE_THRESHOLD: float = 0.05
+
+# Frame brightness (mean pixel intensity 0-255) below which lighting is
+# considered too poor for reliable face tracking.
+DECISION_BRIGHTNESS_THRESHOLD: float = 40.0
+
+# Speech confidence below which the speech engine is considered unreliable
+# for the purposes of mode selection.
+DECISION_SPEECH_CONF_THRESHOLD: float = 0.3
+
+# -----------------------------------------------
 # UI / Overlay
 # -----------------------------------------------
 OVERLAY_OPACITY: float = 0.85
@@ -284,7 +313,8 @@ FACE_CLICK_RATE_LIMIT_S: float = 0.8   # matches CLICK_COOLDOWN_SECONDS
 CONTROLLER_MAX_CURSOR_DELTA: float = 40.0
 
 # Screen-coordinate clamping margin in pixels (cursor is kept this far from edge).
-CURSOR_SCREEN_MARGIN: int = 5
+# Set to 0 to allow reaching full screen edges (e.g. window close buttons, taskbar).
+CURSOR_SCREEN_MARGIN: int = 0
 
 # Emergency stop hotkey for pynput GlobalHotKeys format.
 EMERGENCY_STOP_HOTKEY_PYNPUT: str = "<ctrl>+<alt>+q"

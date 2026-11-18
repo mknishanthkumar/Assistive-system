@@ -1,12 +1,13 @@
 """
-main.py – Stage 4 integration entry point for the Assistive Control System.
+main.py – Stage 5 integration entry point for the Assistive Control System.
 
 Runs FaceTracker and SpeechEngine together in a fully threaded architecture:
 
-  Thread 1 (Face loop)   : reads FaceTracker events → Router → OutputController
-  Thread 2 (Speech loop) : reads SpeechEngine events → Router → OutputController
-  Thread 3 (Sensor loop) : SensorLoop polls context (window, noise, brightness)
-  Main thread            : runs pynput GlobalHotKeys + waits for shutdown signal
+  Thread 1 (Face loop)     : reads FaceTracker events → Router → OutputController
+  Thread 2 (Speech loop)   : reads SpeechEngine events → Router → OutputController
+  Thread 3 (Sensor loop)   : SensorLoop polls context (window, noise, brightness)
+  Thread 4 (Decision loop) : DecisionEngine evaluates sensor readings → mode
+  Main thread              : runs pynput GlobalHotKeys + waits for shutdown signal
 
 Shutdown sequence (Ctrl+C, emergency stop, "stop control" voice command):
   1. stop_event is set
@@ -37,6 +38,7 @@ from output.controller import OutputController
 from output.router import Router
 from context.sensors import SensorLoop
 from logs.csv_logger import CsvLogger
+from context.decision_engine import DecisionEngine, Mode
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +80,7 @@ def _print_banner(dry_run: bool) -> None:
     width = 70
     print()
     print("=" * width)
-    print("  Assistive Control System  —  Stage 4 Integration")
+    print("  Assistive Control System  —  Stage 5 Context Engine")
     print("=" * width)
     if dry_run:
         print("  MODE : DRY-RUN  (actions logged, NOT executed)")
@@ -89,6 +91,7 @@ def _print_banner(dry_run: bool) -> None:
     print(f"  Confidence threshold : {config.SPEECH_CONFIDENCE_THRESHOLD}")
     print()
     print("  Input sources  : Face (MediaPipe) + Speech (Faster-Whisper)")
+    print("  Context engine : decision engine (FACE/SPEECH/BOTH/PAUSED)")
     print("  Context sensor : active window, noise level, brightness")
     print("  CSV log        : logs/runs/run_<timestamp>.csv")
     print()
@@ -164,15 +167,29 @@ def _speech_loop(
     csv_logger: CsvLogger,
     stop_event: threading.Event,
     speech_queue: "queue.Queue",
+    decision_engine: "DecisionEngine | None" = None,
+    tracker: "FaceTracker | None" = None,
 ) -> None:
     """
     Poll speech events at 20 Hz, forward to Router.
     Uses a queue sentinel (None) for clean shutdown.
+
+    Also intercepts manual override and calibration commands:
+      "switch to voice" → decision_engine.set_manual_override(Mode.SPEECH)
+      "switch to face"  → decision_engine.set_manual_override(Mode.FACE)
+      "switch to auto"  / "automatic mode" → decision_engine.clear_manual_override()
+      "calibrate" / "center cursor" → tracker.calibrate_neutral()
     """
     logger = logging.getLogger("assistive.speech_loop")
     logger.info("Speech loop started.")
 
     last_event_id: int = 0
+
+    # Transcription phrases that trigger mode overrides or actions.
+    _OVERRIDE_SPEECH = ("switch to voice", "voice mode", "speech mode")
+    _OVERRIDE_FACE   = ("switch to face", "face mode")
+    _OVERRIDE_AUTO   = ("switch to auto", "automatic mode", "auto mode", "clear override")
+    _CALIBRATE       = ("calibrate", "center cursor", "recalibrate", "center face")
 
     while not stop_event.is_set():
         try:
@@ -204,6 +221,23 @@ def _speech_loop(
                 "vad_status": events.get("vad_status", "silence"),
             })
 
+            # Check for manual override phrases in the transcription.
+            if decision_engine is not None:
+                raw = (events.get("transcription_text") or "").lower().strip()
+                if any(p in raw for p in _OVERRIDE_SPEECH):
+                    logger.info("Voice override → SPEECH mode")
+                    decision_engine.set_manual_override(Mode.SPEECH)
+                elif any(p in raw for p in _OVERRIDE_FACE):
+                    logger.info("Voice override → FACE mode")
+                    decision_engine.set_manual_override(Mode.FACE)
+                elif any(p in raw for p in _OVERRIDE_AUTO):
+                    logger.info("Voice command → clearing override (auto mode)")
+                    decision_engine.clear_manual_override()
+                elif any(p in raw for p in _CALIBRATE):
+                    logger.info("Voice command → recalibrating neutral face position")
+                    if tracker is not None:
+                        tracker.calibrate_neutral()
+
             # Forward to router
             try:
                 router.handle_speech_events(events)
@@ -223,7 +257,7 @@ def _speech_loop(
 def main(dry_run: bool = config.DRY_RUN) -> None:
     """Application entry point."""
     logger = _setup_logging()
-    logger.info("Assistive Control System starting — Stage 4 Integration")
+    logger.info("Assistive Control System starting — Stage 5 Context Engine")
     logger.info("Python %s on %s", sys.version.split()[0], sys.platform)
 
     _print_banner(dry_run)
@@ -240,8 +274,13 @@ def main(dry_run: bool = config.DRY_RUN) -> None:
     # ── OutputController ──────────────────────────────────────────────
     controller = OutputController(dry_run=dry_run)
 
+    # ── DecisionEngine ────────────────────────────────────────────────
+    decision_engine = DecisionEngine(csv_logger=csv_logger)
+    logger.info("DecisionEngine created (hysteresis: hold=%.1fs interval=%.1fs).",
+                config.DECISION_HOLD_DURATION_S, config.DECISION_MIN_SWITCH_INTERVAL_S)
+
     # ── Router ────────────────────────────────────────────────────────
-    router = Router(controller, csv_logger=csv_logger)
+    router = Router(controller, csv_logger=csv_logger, decision_engine=decision_engine)
 
     # ── FaceTracker ───────────────────────────────────────────────────
     tracker = FaceTracker()
@@ -288,7 +327,7 @@ def main(dry_run: bool = config.DRY_RUN) -> None:
     )
     speech_thread = threading.Thread(
         target=_speech_loop,
-        args=(engine, router, csv_logger, stop_event, speech_q),
+        args=(engine, router, csv_logger, stop_event, speech_q, decision_engine, tracker if face_started else None),
         name="SpeechEventLoop",
         daemon=True,
     )
@@ -324,7 +363,7 @@ def main(dry_run: bool = config.DRY_RUN) -> None:
 
     # ── Sensor drain thread ───────────────────────────────────────────
     def _sensor_drain() -> None:
-        """Log sensor readings from the queue to CSV."""
+        """Log sensor readings from the queue to CSV and feed the DecisionEngine."""
         log = logging.getLogger("assistive.sensor_drain")
         while not stop_event.is_set():
             try:
@@ -338,6 +377,35 @@ def main(dry_run: bool = config.DRY_RUN) -> None:
                     "text_field_focused": reading.get("text_field_focused", "unknown"),
                     "message": "sensor_reading",
                 })
+
+                # Feed sensor data into the decision engine so it can update mode.
+                decision_inputs = {
+                    "noise_level":        reading.get("noise_level", 0.0),
+                    "face_confidence":    reading.get("face_confidence", 0.0),
+                    "brightness":         reading.get("frame_brightness", 128.0),
+                    "active_app":         reading.get("active_window", "unknown"),
+                    "text_field_focused": reading.get("text_field_focused", False),
+                    "speech_confidence":  0.0,  # updated below if speech running
+                }
+                if speech_started:
+                    try:
+                        # Use consume=False to prevent clearing speech commands from speech thread
+                        se = engine.get_latest_events(consume=False)
+                        conf = float(se.get("speech_confidence", 0.0))
+                        # If engine is actively running and room is quiet, speech is reliable and ready
+                        if conf == 0.0 and reading.get("noise_level", 0.0) < config.DECISION_NOISE_THRESHOLD:
+                            decision_inputs["speech_confidence"] = 0.8
+                        else:
+                            decision_inputs["speech_confidence"] = conf
+                    except Exception:
+                        pass
+
+                result = decision_engine.evaluate(decision_inputs)
+                log.debug(
+                    "Decision: mode=%s reason=%s override=%s",
+                    result.mode.value, result.reason, result.is_override,
+                )
+
             except queue.Empty:
                 continue
             except Exception as exc:

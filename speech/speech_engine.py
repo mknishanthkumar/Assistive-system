@@ -414,21 +414,23 @@ class SpeechEngine:
 
         logger.info("SpeechEngine stopped and resources released.")
 
-    def get_latest_events(self) -> Dict[str, Any]:
+    def get_latest_events(self, consume: bool = True) -> Dict[str, Any]:
         """
         Return a snapshot of the latest events.
 
         Thread-safe.  Edge-triggered fields (command, command_phrase,
         dictation_text, transcription_text) are consumed on first read
-        so the same event is never returned twice.
+        when consume=True so the same event is never returned twice.
+        Pass consume=False to peek without clearing edge-triggered fields.
         """
         with self._lock:
             snapshot = dict(self._events)
-            # Consume edge-triggered fields
-            self._events["command"] = None
-            self._events["command_phrase"] = None
-            self._events["dictation_text"] = None
-            self._events["transcription_text"] = None
+            if consume:
+                # Consume edge-triggered fields
+                self._events["command"] = None
+                self._events["command_phrase"] = None
+                self._events["dictation_text"] = None
+                self._events["transcription_text"] = None
         return snapshot
 
     # ------------------------------------------------------------------
