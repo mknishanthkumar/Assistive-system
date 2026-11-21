@@ -131,6 +131,133 @@ def _default_type_text(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# HoldScrollManager — continuous scrolling mode
+# ---------------------------------------------------------------------------
+
+class HoldScrollManager:
+    """
+    Manages a background hold-scroll session started by a voice command.
+
+    When started, a daemon thread fires pyautogui.scroll() at a configurable
+    interval until stop() is called or the safety timeout is reached.
+
+    Design
+    ------
+    - Direction is explicit (set at start time): +1 = up, -1 = down.
+    - Each tick scrolls HOLD_SCROLL_AMOUNT clicks.
+    - Interval between ticks: HOLD_SCROLL_INTERVAL_S.
+    - Safety timeout: HOLD_SCROLL_TIMEOUT_S — auto-stops even without a voice command.
+    - Thread-safe: start()/stop()/is_active() may be called from any thread.
+    - In dry_run mode the scroll calls are logged but not executed.
+
+    Usage
+    -----
+        mgr = HoldScrollManager(dry_run=False)
+        mgr.start(direction=1)    # start scrolling up
+        ...
+        mgr.stop()                # stop on "stop" / "release" voice command
+    """
+
+    def __init__(self, dry_run: bool = False) -> None:
+        self._dry_run = dry_run
+        self._lock = threading.Lock()
+        self._active = False
+        self._direction: int = 0          # +1 = up, -1 = down
+        self._thread: Optional[threading.Thread] = None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def start(self, direction: int) -> None:
+        """
+        Begin continuous scrolling.
+
+        Parameters
+        ----------
+        direction : int
+            +1 to scroll up, -1 to scroll down.
+        """
+        with self._lock:
+            if self._active:
+                # Already running — just update direction and return.
+                self._direction = direction
+                logger.info(
+                    "HoldScroll direction changed to %s.",
+                    "UP" if direction > 0 else "DOWN",
+                )
+                return
+            self._active = True
+            self._direction = direction
+
+        self._thread = threading.Thread(
+            target=self._scroll_loop,
+            name="HoldScrollThread",
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info(
+            "HoldScroll STARTED: direction=%s interval=%.2fs timeout=%.1fs",
+            "UP" if direction > 0 else "DOWN",
+            config.HOLD_SCROLL_INTERVAL_S,
+            config.HOLD_SCROLL_TIMEOUT_S,
+        )
+
+    def stop(self) -> None:
+        """Stop the hold-scroll session."""
+        with self._lock:
+            if not self._active:
+                return
+            self._active = False
+        logger.info("HoldScroll STOPPED by command.")
+
+    def is_active(self) -> bool:
+        """Return True if a hold-scroll session is currently running."""
+        with self._lock:
+            return self._active
+
+    # ------------------------------------------------------------------
+    # Background thread
+    # ------------------------------------------------------------------
+
+    def _scroll_loop(self) -> None:
+        """Daemon thread: scroll until stopped or timeout fires."""
+        deadline = time.monotonic() + config.HOLD_SCROLL_TIMEOUT_S
+        interval = config.HOLD_SCROLL_INTERVAL_S
+        amount = config.HOLD_SCROLL_AMOUNT
+
+        while True:
+            with self._lock:
+                if not self._active:
+                    break
+                direction = self._direction
+
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "HoldScroll safety timeout reached (%.1fs) — auto-stopping.",
+                    config.HOLD_SCROLL_TIMEOUT_S,
+                )
+                with self._lock:
+                    self._active = False
+                break
+
+            scroll_amount = direction * amount
+            if self._dry_run:
+                logger.debug(
+                    "[DRY-RUN] HoldScroll tick: pyautogui.scroll(%d)", scroll_amount
+                )
+            else:
+                try:
+                    pyautogui.scroll(scroll_amount)
+                except Exception as exc:
+                    logger.debug("HoldScroll tick error: %s", exc)
+
+            time.sleep(interval)
+
+        logger.debug("HoldScroll thread exited.")
+
+
+# ---------------------------------------------------------------------------
 # OutputController
 # ---------------------------------------------------------------------------
 class OutputController:
@@ -177,6 +304,9 @@ class OutputController:
         # Face-click rate-limit (separate from speech command cooldown)
         self._last_face_click_time: float = 0.0
 
+        # Hold-scroll manager (continuous scrolling mode)
+        self._hold_scroll = HoldScrollManager(dry_run=dry_run)
+
         # Build the command -> backend mapping
         self._actions: Dict[str, Callable] = {
             "click":            mouse_click or _default_mouse_click,
@@ -211,12 +341,18 @@ class OutputController:
         """Immediately disable all action execution."""
         with self._lock:
             self._emergency_stop = True
+        self._hold_scroll.stop()
         logger.warning("EMERGENCY STOP activated — all actions disabled.")
 
     def is_stopped(self) -> bool:
         """Return True if emergency stop is active."""
         with self._lock:
             return self._emergency_stop
+
+    @property
+    def hold_scroll(self) -> "HoldScrollManager":
+        """Return the HoldScrollManager instance for this controller."""
+        return self._hold_scroll
 
     # ------------------------------------------------------------------
     # Command execution
@@ -248,7 +384,13 @@ class OutputController:
             return ActionResult(success=False, command=command, message=msg)
 
         # ── Skip non-actionable commands (dictation control, mode switches) ──
-        if command in ("start_dictation", "stop_dictation", "stop_control"):
+        if command in (
+            "start_dictation", "stop_dictation", "stop_control",
+            "recenter",           # handled by _speech_loop → tracker.calibrate_neutral()
+            "hold_scroll_down",   # handled by _speech_loop → HoldScrollManager
+            "hold_scroll_up",     # handled by _speech_loop → HoldScrollManager
+            "stop_scroll",        # handled by _speech_loop → HoldScrollManager.stop()
+        ):
             msg = f"Control command '{command}' handled by SpeechEngine, not OutputController."
             logger.debug(msg)
             return ActionResult(success=True, command=command, message=msg)

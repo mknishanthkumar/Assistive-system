@@ -480,5 +480,91 @@ class TestCleanShutdown(unittest.TestCase):
         self.assertTrue(ctrl.is_stopped())
 
 
+# ---------------------------------------------------------------------------
+# Hold-to-scroll tests (Change 3)
+# ---------------------------------------------------------------------------
+class TestHoldScrollManager(unittest.TestCase):
+    """Verify HoldScrollManager behavior, commands, and safety controls."""
+
+    def test_config_settings(self):
+        self.assertTrue(hasattr(config, "HOLD_SCROLL_AMOUNT"))
+        self.assertTrue(hasattr(config, "HOLD_SCROLL_INTERVAL_S"))
+        self.assertTrue(hasattr(config, "HOLD_SCROLL_TIMEOUT_S"))
+        self.assertGreater(config.HOLD_SCROLL_AMOUNT, 0)
+        self.assertGreater(config.HOLD_SCROLL_INTERVAL_S, 0.0)
+        self.assertGreater(config.HOLD_SCROLL_TIMEOUT_S, 0.0)
+
+    def test_start_and_stop_up(self):
+        ctrl, _ = _MockController.create(dry_run=True)
+        mgr = ctrl.hold_scroll
+        self.assertFalse(mgr.is_active())
+
+        mgr.start(direction=1)
+        self.assertTrue(mgr.is_active())
+
+        mgr.stop()
+        self.assertFalse(mgr.is_active())
+
+    def test_start_and_stop_down(self):
+        ctrl, _ = _MockController.create(dry_run=True)
+        mgr = ctrl.hold_scroll
+        self.assertFalse(mgr.is_active())
+
+        mgr.start(direction=-1)
+        self.assertTrue(mgr.is_active())
+
+        mgr.stop()
+        self.assertFalse(mgr.is_active())
+
+    def test_direction_switch_while_active(self):
+        ctrl, _ = _MockController.create(dry_run=True)
+        mgr = ctrl.hold_scroll
+
+        mgr.start(direction=-1)
+        self.assertTrue(mgr.is_active())
+        self.assertEqual(mgr._direction, -1)
+
+        mgr.start(direction=1)
+        self.assertTrue(mgr.is_active())
+        self.assertEqual(mgr._direction, 1)
+
+        mgr.stop()
+        self.assertFalse(mgr.is_active())
+
+    def test_emergency_stop_halts_hold_scroll(self):
+        ctrl, _ = _MockController.create(dry_run=True)
+        ctrl.hold_scroll.start(direction=-1)
+        self.assertTrue(ctrl.hold_scroll.is_active())
+
+        ctrl.trigger_emergency_stop()
+        self.assertFalse(ctrl.hold_scroll.is_active())
+
+    def test_skip_non_actionable_new_commands(self):
+        ctrl, mocks = _MockController.create()
+        for cmd in ("recenter", "hold_scroll_down", "hold_scroll_up", "stop_scroll"):
+            res = ctrl.execute(cmd, confidence=1.0)
+            self.assertTrue(res.success)
+            self.assertIn("handled by", res.message)
+            # Backend scroll functions should NOT be called directly by execute()
+            mocks["scroll_up"].assert_not_called()
+            mocks["scroll_down"].assert_not_called()
+
+    def test_timeout_auto_stops(self):
+        ctrl, _ = _MockController.create(dry_run=True)
+        mgr = ctrl.hold_scroll
+        orig_timeout = config.HOLD_SCROLL_TIMEOUT_S
+        orig_interval = config.HOLD_SCROLL_INTERVAL_S
+        try:
+            config.HOLD_SCROLL_TIMEOUT_S = 0.05
+            config.HOLD_SCROLL_INTERVAL_S = 0.01
+            mgr.start(direction=-1)
+            self.assertTrue(mgr.is_active())
+            time.sleep(0.12)
+            self.assertFalse(mgr.is_active())
+        finally:
+            config.HOLD_SCROLL_TIMEOUT_S = orig_timeout
+            config.HOLD_SCROLL_INTERVAL_S = orig_interval
+
+
 if __name__ == "__main__":
     unittest.main()

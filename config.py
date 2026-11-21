@@ -250,6 +250,21 @@ SPEECH_COMMAND_COOLDOWN_S: float = 1.0
 # Positive = up, negative = down.  Tuned to ~25 clicks for ~7 cm of page movement.
 SCROLL_AMOUNT: int = 40
 
+# -----------------------------------------------
+# Hold-to-scroll (continuous scrolling mode)
+# -----------------------------------------------
+# Number of scroll "clicks" fired per hold-scroll tick.
+# Higher = faster scrolling per tick.  Default: 5 (comfortable speed).
+HOLD_SCROLL_AMOUNT: int = 5
+
+# Seconds between each hold-scroll tick (controls scroll speed).
+# Lower = faster scrolling.  Recommended range: 0.05 (fast) - 0.3 (slow).
+HOLD_SCROLL_INTERVAL_S: float = 0.12
+
+# Safety timeout (seconds): hold-scroll stops automatically after this duration
+# even if no 'stop' command is received.  Prevents runaway scrolling.
+HOLD_SCROLL_TIMEOUT_S: float = 30.0
+
 # Delay in seconds between individual keystrokes when typing dictation text.
 # 0.0 = fastest; increase if the target app drops characters.
 DICTATION_TYPE_DELAY_S: float = 0.02

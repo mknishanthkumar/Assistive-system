@@ -898,5 +898,74 @@ class TestNoSwitchNeeded(DecisionEngineTestBase):
         self.assertEqual(result.mode, Mode.FACE)
 
 
+# ===========================================================================
+# 23. Manual override – BOTH mode (Change 1)
+# ===========================================================================
+
+class TestManualOverrideBothMode(DecisionEngineTestBase):
+    """set_manual_override(Mode.BOTH) forces BOTH regardless of sensor state."""
+
+    def test_override_both_forces_both_in_noisy_room(self) -> None:
+        """BOTH override ignores noise (which would normally → FACE)."""
+        self.engine.set_manual_override(Mode.BOTH)
+        result = self._eval(_inputs(noise_level=0.9, face_confidence=0.9))
+        self.assertEqual(result.mode, Mode.BOTH)
+        self.assertTrue(result.is_override)
+
+    def test_override_both_forces_both_in_dark_room(self) -> None:
+        """BOTH override ignores poor lighting (which would normally → SPEECH)."""
+        self.engine.set_manual_override(Mode.BOTH)
+        result = self._eval(_inputs(brightness=5.0, face_confidence=0.1))
+        self.assertEqual(result.mode, Mode.BOTH)
+        self.assertTrue(result.is_override)
+
+    def test_override_both_forces_both_in_text_field(self) -> None:
+        """BOTH override ignores text-field context (which would normally → SPEECH)."""
+        self.engine.set_manual_override(Mode.BOTH)
+        result = self._eval(_inputs(text_field_focused=True, noise_level=0.0))
+        self.assertEqual(result.mode, Mode.BOTH)
+        self.assertTrue(result.is_override)
+
+    def test_override_both_reason_string(self) -> None:
+        """override reason is 'manual override' when BOTH is forced."""
+        self.engine.set_manual_override(Mode.BOTH)
+        result = self._eval(_stable_inputs())
+        self.assertEqual(result.reason, "manual override")
+
+    def test_override_both_is_override_flag(self) -> None:
+        """is_override is True while BOTH override is active."""
+        self.engine.set_manual_override(Mode.BOTH)
+        result = self._eval(_stable_inputs())
+        self.assertTrue(result.is_override)
+
+    def test_clear_override_from_both_returns_to_auto(self) -> None:
+        """Clearing a BOTH override returns to automatic rule evaluation."""
+        # Force a stable BOTH scenario so the auto result is also BOTH
+        self.engine.set_manual_override(Mode.BOTH)
+        self.engine.clear_manual_override()
+        self.assertFalse(self.engine.is_override)
+
+    def test_override_both_current_mode_property(self) -> None:
+        """current_mode property returns BOTH while override is active."""
+        self.engine.set_manual_override(Mode.BOTH)
+        self.assertEqual(self.engine.current_mode, Mode.BOTH)
+
+    def test_switch_from_speech_override_to_both_override(self) -> None:
+        """Can transition from SPEECH override to BOTH override without clearing."""
+        self.engine.set_manual_override(Mode.SPEECH)
+        self.assertEqual(self.engine.current_mode, Mode.SPEECH)
+        self.engine.set_manual_override(Mode.BOTH)
+        self.assertEqual(self.engine.current_mode, Mode.BOTH)
+        self.assertTrue(self.engine.is_override)
+
+    def test_switch_from_face_override_to_both_override(self) -> None:
+        """Can transition from FACE override to BOTH override without clearing."""
+        self.engine.set_manual_override(Mode.FACE)
+        self.assertEqual(self.engine.current_mode, Mode.FACE)
+        self.engine.set_manual_override(Mode.BOTH)
+        self.assertEqual(self.engine.current_mode, Mode.BOTH)
+        self.assertTrue(self.engine.is_override)
+
+
 if __name__ == "__main__":
     unittest.main()

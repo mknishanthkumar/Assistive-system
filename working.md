@@ -9,9 +9,9 @@
 
 | Field             | Value                                    |
 |-------------------|------------------------------------------|
-| **Current Stage** | Stage 5 – Context-Aware Decision Engine |
+| **Current Stage** | Stage 5 – Context-Aware Decision Engine (Enhanced) |
 | **Stage Status**  | COMPLETE                                 |
-| **Last Updated**  | 2026-11-18                               |
+| **Last Updated**  | 2026-11-22                               |
 | **Python**        | 3.11.0 (64-bit, MSC v.1933)    |
 | **Venv**          | .venv                          |
 | **OS**            | Windows (win32)                |
@@ -505,25 +505,89 @@ S10: Hysteresis hold timer    → BOTH (held) → FACE (committed after 0.1 s)
 
 ---
 
-## Files Index (updated Post-Stage 5 Bugfix)
+## Post-Stage 5 Enhancements (Manual Override BOTH, Voice Re-center, Hold-to-Scroll) — COMPLETE
+
+### Feature 1: "Both" Mode in Manual Override
+- **Objective**: Add manual override option for `Mode.BOTH` so face/head tracking and speech recognition are simultaneously active on demand without changing auto-mode decision logic.
+- **Voice Commands**: "switch to both", "switch to face and speech", "both mode".
+- **Implementation**:
+  - `context/decision_engine.py`: updated `set_manual_override()` to apply the mode immediately and trigger an audit/overlay transition.
+  - `main.py`: updated `_speech_loop` to detect `_OVERRIDE_BOTH` phrases before `_OVERRIDE_FACE` / `_OVERRIDE_SPEECH` to avoid substring collision on "switch to face and speech".
+  - Status display and logs: DecisionEngine logs `MODE SWITCH ... -> BOTH | reason=manual override | override=True`, overlay queue updated with `mode="BOTH"`, CSV logger audit entry recorded.
+  - Tests: added 9 unit tests in `tests/test_decision_engine.py` (`TestManualOverrideBothMode`) verifying override behavior, flag, property, transitions, and clearance.
+
+### Feature 2: Voice Command to Re-center (Head Tracking)
+- **Objective**: Provide hands-free re-calibration of neutral face/head tracking position for users unable to press the 'C' key. Keep 'C' key operational.
+- **Voice Commands**: "arrange center", "recenter", "re-center", "center".
+- **Confirmation**:
+  - **Audio Confirmation**: High-pitched confirmation beep (880 Hz, 150 ms) triggered asynchronously via background thread (`winsound.Beep`).
+  - **Visual Confirmation**: Console print confirmation `[RE-CENTER] Neutral head position calibrated successfully.`, logging to INFO, overlay badge queue updated with `last_cmd="RE-CENTERED"`, and action logged to CSV.
+- **Implementation**:
+  - `speech/speech_engine.py`: added canonical `recenter` command and phrases to `COMMANDS`.
+  - `main.py`: intercepted in `_speech_loop` to invoke `tracker.calibrate_neutral()` and dispatch audio/visual confirmations.
+  - `demo_face.py`: 'C' key continues to function as before.
+
+### Feature 3: Hold-to-Scroll for Long Documents
+- **Objective**: Enable hands-free continuous scrolling for long documents without repeated utterances.
+- **Voice Commands**:
+  - Start: "hold scroll down", "hold scroll", "continuous scroll down", "keep scrolling down", "hold scroll up", "continuous scroll up", "keep scrolling up".
+  - Stop: "stop scroll", "stop scrolling", "release scroll", "release", "stop".
+- **Implementation**:
+  - `config.py`: added `HOLD_SCROLL_AMOUNT = 5`, `HOLD_SCROLL_INTERVAL_S = 0.12`, `HOLD_SCROLL_TIMEOUT_S = 30.0`.
+  - `output/controller.py`: created `HoldScrollManager` thread-safe background daemon; wired into `OutputController.hold_scroll`; stopped automatically on emergency stop or safety timeout; exempted `recenter`, `hold_scroll_down`, `hold_scroll_up`, `stop_scroll` in `execute()` from direct backend dispatch.
+  - `main.py`: wired start/stop in `_speech_loop` with raw "stop"/"release" phrase fallback.
+  - `tests/demo_speech.py`: updated demo loop to execute `HoldScrollManager` on hold scroll commands.
+  - Single-step scroll commands (`scroll_up`, `scroll_down`) remain fully intact and independent.
+- **Tests**:
+  - `tests/test_output_controller.py`: added 7 tests in `TestHoldScrollManager`.
+  - `tests/test_speech_engine.py`: updated completeness assertion from 17 to 21 commands; added parser tests for `recenter`, `hold_scroll_down`, `hold_scroll_up`, `stop_scroll`.
+  - `tests/test_speech_loop_features.py`: added 7 end-to-end integration tests for `_speech_loop` covering both override, re-center, and hold-to-scroll.
+
+---
+
+## Test Counts (Cumulative)
+
+| Test file | Tests |
+|-----------|-------|
+| test_face_tracker.py | 39 |
+| test_speech_engine.py | 114 |
+| test_output_controller.py | 47 |
+| test_router.py | 16 |
+| test_sensors.py | 20 |
+| test_csv_logger.py | 19 |
+| test_controller_stage4.py | 14 |
+| test_decision_engine.py | 89 |
+| test_cursor_mapping.py | 7 |
+| test_speech_loop_features.py | 7 |
+| test_launcher.py | 25 |
+| test_stage6_imports.py | 5 |
+| **Total** | **402 passed, 0 failed** |
+
+---
+
+## Files Index (Updated)
 
 | File | Purpose | Last Modified |
 |------|---------|---------------|
-| `main.py` | Entry point — non-destructive sensor drain + voice calibration wired | 2026-11-18 |
-| `config.py` | Full range margins (`CURSOR_SCREEN_MARGIN = 0`) | 2026-11-18 |
-| `face/face_tracker.py` | Confidence gating, non-destructive peek, debug logging | 2026-11-18 |
-| `output/controller.py` | Pause bypass, boundary clamping, safe failsafe exception | 2026-11-18 |
-| `output/router.py` | Low confidence face suppression, debug logging | 2026-11-18 |
-| `context/sensors.py` | Non-destructive peeking `consume=False` | 2026-11-18 |
-| `context/decision_engine.py` | Rule 2b pointing context awareness | 2026-11-18 |
-| `tests/test_cursor_mapping.py` | Automated tests for mapping, edges, pause, and confidence (7 tests) | 2026-11-18 |
-| `tests/demo_cursor_mapping.py` | Scripted dry run for 15 cursor mapping scenarios | 2026-11-18 |
+| `main.py` | Entry point — BOTH override, voice re-center, hold-to-scroll wired | 2026-11-22 |
+| `config.py` | Added HOLD_SCROLL_AMOUNT, HOLD_SCROLL_INTERVAL_S, HOLD_SCROLL_TIMEOUT_S | 2026-11-22 |
+| `speech/speech_engine.py` | Added recenter, hold_scroll_down, hold_scroll_up, stop_scroll | 2026-11-22 |
+| `output/controller.py` | Added HoldScrollManager, emergency stop integration, hold_scroll property | 2026-11-22 |
+| `context/decision_engine.py` | Enhanced set_manual_override() immediate mode switch and overlay push | 2026-11-22 |
+| `tests/demo_speech.py` | Updated banner and demo loop for hold-to-scroll and re-center | 2026-11-22 |
+| `tests/test_decision_engine.py` | Added 9 tests in TestManualOverrideBothMode | 2026-11-22 |
+| `tests/test_speech_engine.py` | Added command parser tests and updated completeness to 21 | 2026-11-22 |
+| `tests/test_output_controller.py` | Added 7 tests in TestHoldScrollManager | 2026-11-22 |
+| `tests/test_speech_loop_features.py` | 7 end-to-end speech loop feature integration tests | 2026-11-22 |
+| `WORKING.md` | Living project tracker | 2026-11-22 |
 
 ---
 
 ## Next Step
 
-**System fully stable and verified.**
-Ready for live camera + microphone test run: `python main.py --dry-run` or real interactive use.
+**All 3 features implemented and fully verified with 402 passing unit/integration tests.**
+Ready for live interactive testing:
+- Run `python main.py --dry-run` or `python main.py`
+- Test voice commands: "switch to both", "arrange center", "hold scroll down", "stop"
 
 

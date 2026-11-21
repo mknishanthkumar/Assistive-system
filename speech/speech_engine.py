@@ -79,6 +79,12 @@ COMMANDS: Dict[str, List[str]] = {
     "start_dictation":   ["start dictation"],
     "stop_dictation":    ["stop dictation"],
     "stop_control":      ["stop control"],
+    # Re-centering (voice alternative to pressing C)
+    "recenter":          ["arrange center", "recenter", "re-center", "center"],
+    # Hold-to-scroll (continuous scrolling mode)
+    "hold_scroll_down":  ["hold scroll down", "hold scroll", "continuous scroll down", "keep scrolling down"],
+    "hold_scroll_up":    ["hold scroll up", "continuous scroll up", "keep scrolling up"],
+    "stop_scroll":       ["stop scroll", "stop scrolling", "release scroll", "release", "stop"],
 }
 
 

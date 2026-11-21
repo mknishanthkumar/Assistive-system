@@ -94,6 +94,8 @@ def _print_banner(dry_run: bool) -> None:
     print()
     print("  Controls:")
     print("    - Say any supported command (e.g. 'click', 'scroll up')")
+    print("    - Say 'hold scroll down' / 'hold scroll up' (say 'stop' or 'release' to halt)")
+    print("    - Say 'arrange center' to re-center head tracking")
     print("    - Say 'start dictation' to type spoken text")
     print("    - Say 'stop dictation' to return to command mode")
     print("    - Press Ctrl+C to stop the demo")
@@ -173,6 +175,13 @@ def main() -> None:
                         f"(phrase='{phrase}', confidence={conf:.2f})"
                     )
                     # Execute the action
+                    if cmd == "hold_scroll_down":
+                        controller.hold_scroll.start(direction=-1)
+                    elif cmd == "hold_scroll_up":
+                        controller.hold_scroll.start(direction=1)
+                    elif cmd == "stop_scroll":
+                        controller.hold_scroll.stop()
+
                     result = controller.execute(cmd, confidence=conf)
                     if result.success:
                         print(f"  [ACTION] {result.message}")

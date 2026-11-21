@@ -77,12 +77,14 @@ Expected: all 14 libraries PASS, webcam PASS, microphone PASS.
 python -m pytest tests\ -v
 ```
 
-Expected: **151 passed, 0 failed** (39 face tests + 72 speech tests + 40 output controller tests).
+Expected: **402 passed, 0 failed** across all test suites.
 Or run individual test suites:
 ```powershell
-python -m pytest tests\test_face_tracker.py -v      # 39 passed
-python -m pytest tests\test_speech_engine.py -v     # 72 passed
-python -m pytest tests\test_output_controller.py -v  # 40 passed
+python -m pytest tests\test_face_tracker.py -v          # 39 passed
+python -m pytest tests\test_speech_engine.py -v         # 114 passed
+python -m pytest tests\test_output_controller.py -v      # 47 passed
+python -m pytest tests\test_decision_engine.py -v       # 89 passed
+python -m pytest tests\test_speech_loop_features.py -v  # 7 passed
 ```
 
 ### 7. Run the main application
@@ -176,17 +178,20 @@ Runs the standalone speech control module with live microphone input and execute
 | **Ctrl+Alt+Q** | Global emergency hotkey — instantly stops all action execution |
 | **Ctrl+C** | Gracefully stops the engine, releases microphone stream and keyboard hooks |
 
-### Supported Voice Commands (17 Commands, 24 Phrases)
+### Supported Voice Commands (21 Commands)
 
-The engine supports 17 core commands across mouse actions, window management, system keys, and dictation:
+The engine supports 21 core commands across mouse actions, window management, system keys, dictation, re-centering, and continuous scrolling:
 
 | Category | Command ID | Spoken Phrase / Aliases | Windows Action Executed |
 |----------|------------|-------------------------|-------------------------|
 | **Mouse Actions** | `click` | "click", "left click", "please click" | Left click at current cursor position |
 | | `double_click` | "double click" | Double left click |
 | | `right_click` | "right click" | Right click / context menu |
-| | `scroll_up` | "scroll up" | Scroll up (`SCROLL_AMOUNT = 3`) |
-| | `scroll_down` | "scroll down" | Scroll down (`SCROLL_AMOUNT = 3`) |
+| | `scroll_up` | "scroll up" | Single-step scroll up (`SCROLL_AMOUNT`) |
+| | `scroll_down` | "scroll down" | Single-step scroll down (`SCROLL_AMOUNT`) |
+| | `hold_scroll_down` | "hold scroll down", "hold scroll", "continuous scroll down" | Continuous scroll down (`HOLD_SCROLL_AMOUNT` per tick) |
+| | `hold_scroll_up` | "hold scroll up", "continuous scroll up" | Continuous scroll up (`HOLD_SCROLL_AMOUNT` per tick) |
+| | `stop_scroll` | "stop scroll", "stop", "release", "stop scrolling" | Stops continuous hold-scroll immediately |
 | **Window Management** | `open_browser` | "open browser", "browser" | Opens default browser via `webbrowser.open` |
 | | `close_window` | "close window", "exit window" | Closes active window (`Alt+F4`) |
 | | `switch_window` | "switch window", "next window" | Switches window (`Alt+Tab`) |
@@ -196,9 +201,18 @@ The engine supports 17 core commands across mouse actions, window management, sy
 | | `mute` | "mute", "unmute" | Toggles audio mute (`VK_VOLUME_MUTE`) |
 | | `press_enter` | "press enter", "enter" | Sends Enter key (`pyautogui.press('enter')`) |
 | | `press_escape` | "press escape", "escape" | Sends Escape key (`pyautogui.press('escape')`) |
+| **Calibration** | `recenter` | "arrange center", "recenter", "re-center", "center" | Re-calibrates neutral head tracking position (hands-free alternative to C key) |
 | **Dictation & Safety** | `start_dictation` | "start dictation", "dictation mode" | Begins dictation (types into focused field) |
 | | `stop_dictation` | "stop dictation", "end dictation" | Stops dictation mode |
 | | `stop_control` | "stop control" | Software stop of action execution |
+
+### Mode Switching Voice Commands
+
+Users can manually override input modes hands-free by voice:
+- `"switch to both"` / `"switch to face and speech"` → Forces **BOTH** mode (head tracking + voice active together)
+- `"switch to face"` → Forces **FACE** mode
+- `"switch to voice"` → Forces **SPEECH** mode
+- `"switch to auto"` / `"automatic mode"` → Clears override and restores context-aware auto switching
 
 ### Command Matching Pipeline
 

@@ -36,6 +36,8 @@ Manual override
   clear_manual_override()     : returns to automatic rule evaluation.
   "switch to voice" phrase    : handled upstream; calls set_manual_override(SPEECH).
   "switch to face" phrase     : handled upstream; calls set_manual_override(FACE).
+  "switch to both" phrase     : handled upstream; calls set_manual_override(BOTH).
+  "switch to face and speech" : handled upstream; calls set_manual_override(BOTH).
   Jaw-gesture shortcut        : caller can invoke set_manual_override() too.
 
 Thread safety
@@ -293,6 +295,16 @@ class DecisionEngine:
             # Reset candidate so hysteresis doesn't fire immediately after clearing
             self._candidate     = None
             logger.info("Manual override set: mode=%s", mode.value)
+            if mode != self._current_mode:
+                now = time.monotonic()
+                result = DecisionResult(
+                    mode=mode,
+                    reason="manual override",
+                    is_override=True,
+                    timestamp=now,
+                    inputs={},
+                )
+                self._apply_switch(result, now)
 
     def clear_manual_override(self) -> None:
         """

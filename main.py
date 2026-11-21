@@ -171,6 +171,7 @@ def _speech_loop(
     speech_queue: "queue.Queue",
     decision_engine: "DecisionEngine | None" = None,
     tracker: "FaceTracker | None" = None,
+    controller: "OutputController | None" = None,
 ) -> None:
     """
     Poll speech events at 20 Hz, forward to Router.
@@ -179,8 +180,11 @@ def _speech_loop(
     Also intercepts manual override and calibration commands:
       "switch to voice" → decision_engine.set_manual_override(Mode.SPEECH)
       "switch to face"  → decision_engine.set_manual_override(Mode.FACE)
+      "switch to both" / "switch to face and speech" → set_manual_override(Mode.BOTH)
       "switch to auto"  / "automatic mode" → decision_engine.clear_manual_override()
-      "calibrate" / "center cursor" → tracker.calibrate_neutral()
+      "arrange center" / "recenter" / "re-center" / "center" → tracker.calibrate_neutral()
+      "hold scroll down" / "hold scroll up" → controller.hold_scroll.start(direction)
+      "stop scroll" / "release" → controller.hold_scroll.stop()
     """
     logger = logging.getLogger("assistive.speech_loop")
     logger.info("Speech loop started.")
@@ -190,8 +194,13 @@ def _speech_loop(
     # Transcription phrases that trigger mode overrides or actions.
     _OVERRIDE_SPEECH = ("switch to voice", "voice mode", "speech mode")
     _OVERRIDE_FACE   = ("switch to face", "face mode")
+    _OVERRIDE_BOTH   = ("switch to both", "switch to face and speech", "both mode")
     _OVERRIDE_AUTO   = ("switch to auto", "automatic mode", "auto mode", "clear override")
-    _CALIBRATE       = ("calibrate", "center cursor", "recalibrate", "center face")
+    _CALIBRATE       = (
+        "calibrate", "center cursor", "recalibrate", "center face",
+        # New voice re-center commands (Change 2)
+        "arrange center", "recenter", "re-center", "center",
+    )
 
     while not stop_event.is_set():
         try:
@@ -223,10 +232,15 @@ def _speech_loop(
                 "vad_status": events.get("vad_status", "silence"),
             })
 
+            cmd = events.get("command")
+
             # Check for manual override phrases in the transcription.
             if decision_engine is not None:
                 raw = (events.get("transcription_text") or "").lower().strip()
-                if any(p in raw for p in _OVERRIDE_SPEECH):
+                if any(p in raw for p in _OVERRIDE_BOTH):
+                    logger.info("Voice override → BOTH mode")
+                    decision_engine.set_manual_override(Mode.BOTH)
+                elif any(p in raw for p in _OVERRIDE_SPEECH):
                     logger.info("Voice override → SPEECH mode")
                     decision_engine.set_manual_override(Mode.SPEECH)
                 elif any(p in raw for p in _OVERRIDE_FACE):
@@ -235,10 +249,77 @@ def _speech_loop(
                 elif any(p in raw for p in _OVERRIDE_AUTO):
                     logger.info("Voice command → clearing override (auto mode)")
                     decision_engine.clear_manual_override()
-                elif any(p in raw for p in _CALIBRATE):
+                elif any(p in raw for p in _CALIBRATE) or cmd == "recenter":
                     logger.info("Voice command → recalibrating neutral face position")
                     if tracker is not None:
                         tracker.calibrate_neutral()
+                        # Visual confirmation: console print + logger
+                        print("\n  [RE-CENTER] Neutral head position calibrated successfully.\n")
+                        logger.info("Re-center complete: neutral position updated.")
+                        # Audio confirmation: pleasant beep in background thread
+                        def _beep_recenter():
+                            try:
+                                import winsound
+                                winsound.Beep(880, 150)
+                            except Exception:
+                                pass
+                        threading.Thread(target=_beep_recenter, daemon=True).start()
+                        # Visual confirmation on overlay badge
+                        if getattr(decision_engine, "_overlay_queue", None) is not None:
+                            try:
+                                decision_engine._overlay_queue.put_nowait({
+                                    "mode": decision_engine.current_mode.value,
+                                    "paused": decision_engine.current_mode.value == "PAUSED",
+                                    "face_ok": True,
+                                    "mic_ok": True,
+                                    "last_cmd": "RE-CENTERED",
+                                    "last_ok": True,
+                                    "speech_fail_count": 0,
+                                    "timestamp": time.monotonic(),
+                                })
+                            except Exception:
+                                pass
+                        csv_logger.log("action", {
+                            "action_command": "recenter",
+                            "action_success": True,
+                            "message": "Face re-centered via voice command.",
+                        })
+
+            # Check for hold-scroll commands in the recognised command ID.
+            if cmd in ("hold_scroll_down", "hold_scroll_up", "stop_scroll"):
+                if controller is not None:
+                    if cmd == "hold_scroll_down":
+                        controller.hold_scroll.start(direction=-1)
+                        logger.info("Hold-scroll DOWN started via voice.")
+                        csv_logger.log("action", {
+                            "action_command": "hold_scroll_down",
+                            "action_success": True,
+                            "message": "Hold-scroll down started.",
+                        })
+                    elif cmd == "hold_scroll_up":
+                        controller.hold_scroll.start(direction=1)
+                        logger.info("Hold-scroll UP started via voice.")
+                        csv_logger.log("action", {
+                            "action_command": "hold_scroll_up",
+                            "action_success": True,
+                            "message": "Hold-scroll up started.",
+                        })
+                    elif cmd == "stop_scroll":
+                        controller.hold_scroll.stop()
+                        logger.info("Hold-scroll STOPPED via voice.")
+                        csv_logger.log("action", {
+                            "action_command": "stop_scroll",
+                            "action_success": True,
+                            "message": "Hold-scroll stopped.",
+                        })
+                # Also check raw text for "stop" / "release" standalone words
+            elif controller is not None and controller.hold_scroll.is_active():
+                raw = (events.get("transcription_text") or "").lower().strip()
+                _STOP_SCROLL = ("stop", "release", "stop scroll", "stop scrolling")
+                if any(p == raw or raw.startswith(p + " ") or raw.endswith(" " + p)
+                       for p in _STOP_SCROLL):
+                    controller.hold_scroll.stop()
+                    logger.info("Hold-scroll stopped via raw phrase: '%s'", raw)
 
             # Forward to router
             try:
@@ -373,7 +454,7 @@ def main(dry_run: bool = config.DRY_RUN) -> None:
     )
     speech_thread = threading.Thread(
         target=_speech_loop,
-        args=(engine, router, csv_logger, stop_event, speech_q, decision_engine, tracker if face_started else None),
+        args=(engine, router, csv_logger, stop_event, speech_q, decision_engine, tracker if face_started else None, controller),
         name="SpeechEventLoop",
         daemon=True,
     )

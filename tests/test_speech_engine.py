@@ -189,6 +189,38 @@ class TestCommandParser(unittest.TestCase):
         self.assertEqual(cmd, "stop_control")
         self.assertEqual(score, 1.0)
 
+    def test_recenter_arrange_center(self):
+        cmd, phrase, score = parse_command("arrange center")
+        self.assertEqual(cmd, "recenter")
+        self.assertEqual(score, 1.0)
+
+    def test_recenter_aliases(self):
+        for phrase in ("recenter", "re-center", "center"):
+            cmd, _, score = parse_command(phrase)
+            self.assertEqual(cmd, "recenter", f"Failed for phrase '{phrase}'")
+            self.assertGreaterEqual(score, 0.90)
+
+    def test_hold_scroll_down(self):
+        cmd, phrase, score = parse_command("hold scroll down")
+        self.assertEqual(cmd, "hold_scroll_down")
+        self.assertEqual(score, 1.0)
+
+    def test_hold_scroll_default(self):
+        cmd, phrase, score = parse_command("hold scroll")
+        self.assertEqual(cmd, "hold_scroll_down")
+        self.assertEqual(score, 1.0)
+
+    def test_hold_scroll_up(self):
+        cmd, phrase, score = parse_command("hold scroll up")
+        self.assertEqual(cmd, "hold_scroll_up")
+        self.assertEqual(score, 1.0)
+
+    def test_stop_scroll(self):
+        for phrase in ("stop scroll", "release", "stop", "stop scrolling"):
+            cmd, _, score = parse_command(phrase)
+            self.assertEqual(cmd, "stop_scroll", f"Failed for phrase '{phrase}'")
+            self.assertGreaterEqual(score, 0.90)
+
 
 # ---------------------------------------------------------------------------
 # TestFuzzyMatching
@@ -592,10 +624,14 @@ class TestCommandCompleteness(unittest.TestCase):
         "press_enter", "press_escape",
         "start_dictation", "stop_dictation",
         "stop_control",
+        "recenter",
+        "hold_scroll_down",
+        "hold_scroll_up",
+        "stop_scroll",
     ]
 
     def test_all_commands_present(self):
-        self.assertEqual(len(self.REQUIRED_COMMANDS), 17)
+        self.assertEqual(len(self.REQUIRED_COMMANDS), 21)
         for cmd_id in self.REQUIRED_COMMANDS:
             self.assertIn(cmd_id, COMMANDS,
                           f"Missing command: {cmd_id}")
