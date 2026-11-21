@@ -355,12 +355,20 @@ class OutputController:
         try:
             current_x, current_y = pyautogui.position()
             screen_w, screen_h = pyautogui.size()
-            margin = config.CURSOR_SCREEN_MARGIN
-            max_x = screen_w - 1 if margin == 0 else screen_w - margin
-            max_y = screen_h - 1 if margin == 0 else screen_h - margin
 
-            new_x = int(round(max(margin, min(max_x, current_x + dx))))
-            new_y = int(round(max(margin, min(max_y, current_y + dy))))
+            # Always keep at least CURSOR_FAILSAFE_MARGIN pixels from every edge
+            # so the cursor never enters PyAutoGUI's corner fail-safe zones.
+            # CURSOR_SCREEN_MARGIN is an additional user-configurable inset.
+            failsafe_margin = getattr(config, "CURSOR_FAILSAFE_MARGIN", 10)
+            user_margin = max(config.CURSOR_SCREEN_MARGIN, failsafe_margin)
+
+            min_x = user_margin
+            min_y = user_margin
+            max_x = screen_w - user_margin - 1
+            max_y = screen_h - user_margin - 1
+
+            new_x = int(round(max(min_x, min(max_x, current_x + dx))))
+            new_y = int(round(max(min_y, min(max_y, current_y + dy))))
 
             # Temporarily set PAUSE to 0.0 to prevent 50ms pause delay on cursor movements
             old_pause = getattr(pyautogui, "PAUSE", 0.0)

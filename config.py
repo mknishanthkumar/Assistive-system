@@ -344,3 +344,60 @@ CSV_LOG_SUBDIR: str = "runs"
 LOG_LEVEL: str = "INFO"                   # DEBUG | INFO | WARNING | ERROR
 LOG_MAX_BYTES: int = 5 * 1024 * 1024      # 5 MB per log file
 LOG_BACKUP_COUNT: int = 3
+
+
+# -----------------------------------------------
+# Stage 6 – Study conditions
+# -----------------------------------------------
+# Baseline mode flag for study conditions.
+# Values: "face_only" | "speech_only" | "manual_switching" | "auto_switching"
+STUDY_CONDITION: str = "auto_switching"
+
+# -----------------------------------------------
+# Stage 6 – Mode-switch hotkeys (pynput format)
+# -----------------------------------------------
+HOTKEY_FORCE_FACE: str = "<ctrl>+<alt>+1"
+HOTKEY_FORCE_SPEECH: str = "<ctrl>+<alt>+2"
+HOTKEY_FORCE_MANUAL: str = "<ctrl>+<alt>+3"
+HOTKEY_FORCE_AUTO: str = "<ctrl>+<alt>+4"
+HOTKEY_CYCLE_MODE: str = "<ctrl>+<alt>+<96>"   # backtick
+HOTKEY_PAUSE_RESUME: str = "<ctrl>+<alt>+<space>"
+HOTKEY_UNDO: str = "<ctrl>+<alt>+z"
+OVERLAY_HOTKEY_PYNPUT: str = "<ctrl>+<alt>+h"
+OVERLAY_ENABLED: bool = True
+
+# -----------------------------------------------
+# Stage 6 – Undo
+# -----------------------------------------------
+UNDO_HISTORY_SIZE: int = 20
+UNDO_IRREVERSIBLE_COMMANDS: list = [
+    "delete", "send", "submit", "empty_trash", "format"
+]
+
+# -----------------------------------------------
+# Stage 6 – Calibration
+# -----------------------------------------------
+CALIBRATION_SETTINGS_PATH: Path = PROJECT_ROOT / "calibration" / "user_settings.json"
+CALIBRATION_HOTKEY_PYNPUT: str = "<ctrl>+<alt>+c"
+
+# -----------------------------------------------
+# Stage 6 – Overlay position (added by overlay fix)
+# -----------------------------------------------
+# Badge position: "top-center" (default) | "top-left" | "top-right"
+# NEVER use a corner-hugging position: PyAutoGUI's fail-safe fires when the
+# mouse cursor reaches any screen corner.
+OVERLAY_POSITION: str = "top-center"
+OVERLAY_MARGIN_X: int = 60   # horizontal inset from screen edge (px)
+OVERLAY_MARGIN_Y: int = 8    # vertical inset from screen top (px)
+
+# How often (ms) the overlay re-asserts HWND_TOPMOST so other apps
+# (fullscreen, Alt+Tab switches) cannot push the pill behind.
+OVERLAY_TOPMOST_ASSERT_MS: int = 500
+
+# -----------------------------------------------
+# Stage 6 – Cursor fail-safe guard (move_cursor)
+# -----------------------------------------------
+# Minimum pixels from every screen edge the cursor is clamped to.
+# Must be > 0 to prevent PyAutoGUI's corner fail-safe from firing.
+# Set >= 10; PyAutoGUI treats the literal pixel (0,0) corner as the trigger.
+CURSOR_FAILSAFE_MARGIN: int = 10

@@ -110,40 +110,51 @@ class TestLowConfidenceFiltering(unittest.TestCase):
 
 
 class TestScreenBoundsAndEdges(unittest.TestCase):
-    """Verify mouse cursor can reach all edges of the screen."""
+    """Verify mouse cursor is clamped within safe bounds (not into fail-safe corners)."""
 
     @patch("output.controller.pyautogui")
-    def test_cursor_reaches_screen_edges(self, mock_pya):
+    def test_cursor_clamped_to_failsafe_margin(self, mock_pya):
+        """
+        move_cursor must clamp to at least CURSOR_FAILSAFE_MARGIN pixels from
+        every edge so the cursor never enters PyAutoGUI's corner fail-safe zones.
+        """
         mock_pya.size.return_value = (1920, 1080)
         ctrl = OutputController(dry_run=False)
+        margin = getattr(config, "CURSOR_FAILSAFE_MARGIN", 10)
+        # Respect user margin too
+        margin = max(margin, config.CURSOR_SCREEN_MARGIN, margin)
 
-        # Push to extreme right edge
+        # Push to extreme right edge — must stop at (1920 - margin - 1)
         mock_pya.position.return_value = (1900, 500)
         ctrl.move_cursor(100.0, 0.0)
         x_right, y_right = mock_pya.moveTo.call_args.args
-        self.assertEqual(x_right, 1919)
+        self.assertLessEqual(x_right, 1920 - margin - 1,
+                             "cursor must not reach screen right edge (fail-safe zone)")
         self.assertEqual(y_right, 500)
 
-        # Push to extreme left edge
+        # Push to extreme left edge — must stop at margin
         mock_pya.position.return_value = (20, 500)
         ctrl.move_cursor(-100.0, 0.0)
         x_left, y_left = mock_pya.moveTo.call_args.args
-        self.assertEqual(x_left, 0)
+        self.assertGreaterEqual(x_left, margin,
+                                "cursor must not reach screen left edge (fail-safe zone)")
         self.assertEqual(y_left, 500)
 
-        # Push to extreme top edge
+        # Push to extreme top edge — must stop at margin
         mock_pya.position.return_value = (500, 20)
         ctrl.move_cursor(0.0, -100.0)
         x_top, y_top = mock_pya.moveTo.call_args.args
         self.assertEqual(x_top, 500)
-        self.assertEqual(y_top, 0)
+        self.assertGreaterEqual(y_top, margin,
+                                "cursor must not reach screen top edge (fail-safe zone)")
 
-        # Push to extreme bottom edge
+        # Push to extreme bottom edge — must stop at (1080 - margin - 1)
         mock_pya.position.return_value = (500, 1060)
         ctrl.move_cursor(0.0, 100.0)
         x_bot, y_bot = mock_pya.moveTo.call_args.args
         self.assertEqual(x_bot, 500)
-        self.assertEqual(y_bot, 1079)
+        self.assertLessEqual(y_bot, 1080 - margin - 1,
+                             "cursor must not reach screen bottom edge (fail-safe zone)")
 
 
 class TestPauseDelayAndClickPreservation(unittest.TestCase):

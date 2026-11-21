@@ -50,6 +50,7 @@ Logging
 """
 
 import logging
+import queue
 import time
 import threading
 from dataclasses import dataclass, field
@@ -125,6 +126,13 @@ class DecisionEngine:
         # _candidate: (mode, reason, time_first_seen)
         self._candidate: Optional[Tuple[Mode, str, float]] = None
         self._last_switch_time: float = 0.0   # monotonic; starts far in past
+
+        # ── Overlay event queue ───────────────────────────────────────────
+        # Any listener (OverlayManager) can attach a queue here.  _apply_switch
+        # pushes a dict into it whenever the mode changes.  Maxsize=16 so a
+        # stalled consumer never blocks the engine.  Using put_nowait with
+        # graceful discard if full.
+        self._overlay_queue: Optional[queue.Queue] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -300,6 +308,28 @@ class DecisionEngine:
             self._candidate     = None
             logger.info("Manual override cleared — returning to automatic mode.")
 
+    def attach_overlay_queue(self, q: "queue.Queue") -> None:
+        """
+        Attach a queue that receives mode-event dicts on every mode switch.
+
+        The dict has the shape expected by OverlayManager.update():
+            {
+                "mode":      str,          # e.g. "SPEECH"
+                "paused":    bool,
+                "last_cmd":  str,          # human-readable reason
+                "last_ok":   bool,
+                "face_ok":   bool,
+                "mic_ok":    bool,
+                "speech_fail_count": int,
+                "timestamp": float,        # monotonic
+            }
+
+        Thread-safe; may be called before or after start().
+        """
+        with self._lock:
+            self._overlay_queue = q
+        logger.info("Overlay queue attached to DecisionEngine.")
+
     @property
     def is_override(self) -> bool:
         """True if a manual override is currently active."""
@@ -449,4 +479,31 @@ class DecisionEngine:
                 })
             except Exception as exc:
                 logger.debug("CSV log failed: %s", exc)
+
+        # ── Push event to overlay queue (non-blocking, never raises) ────────
+        if self._overlay_queue is not None:
+            inp = result.inputs
+            face_conf = float(inp.get("face_confidence", 0.0)) if inp else 0.0
+            noise     = float(inp.get("noise_level",     0.0)) if inp else 0.0
+            face_ok   = face_conf >= getattr(config, "DECISION_FACE_CONF_THRESHOLD", 0.4)
+            mic_ok    = noise     <  getattr(config, "DECISION_NOISE_THRESHOLD",     0.05)
+            overlay_state = {
+                "mode":              result.mode.value,
+                "paused":            result.mode == Mode.PAUSED,
+                "face_ok":           face_ok,
+                "mic_ok":            mic_ok,
+                "last_cmd":          result.reason[:20] if result.reason else "",
+                "last_ok":           result.mode != Mode.PAUSED,
+                "speech_fail_count": 0,
+                "timestamp":         now,
+            }
+            try:
+                if self._overlay_queue.full():
+                    try:
+                        self._overlay_queue.get_nowait()
+                    except Exception:
+                        pass
+                self._overlay_queue.put_nowait(overlay_state)
+            except Exception as exc:
+                logger.debug("Overlay queue push failed: %s", exc)
 

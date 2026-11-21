@@ -36,6 +36,8 @@ from face.face_tracker import FaceTracker
 from speech.speech_engine import SpeechEngine
 from output.controller import OutputController
 from output.router import Router
+from output.overlay import OverlayManager
+from output.hotkeys import HotkeyManager
 from context.sensors import SensorLoop
 from logs.csv_logger import CsvLogger
 from context.decision_engine import DecisionEngine, Mode
@@ -279,6 +281,50 @@ def main(dry_run: bool = config.DRY_RUN) -> None:
     logger.info("DecisionEngine created (hysteresis: hold=%.1fs interval=%.1fs).",
                 config.DECISION_HOLD_DURATION_S, config.DECISION_MIN_SWITCH_INTERVAL_S)
 
+    # ── Overlay ───────────────────────────────────────────────────────
+    overlay_manager: OverlayManager | None = None
+    try:
+        overlay_manager = OverlayManager()
+        overlay_manager.start()
+        # Wire the engine so every mode switch pushes directly to the badge
+        decision_engine.attach_overlay_queue(overlay_manager._q)
+        logger.info("OverlayManager started and wired to DecisionEngine.")
+    except Exception as exc:
+        logger.warning("OverlayManager could not start (badge disabled): %s", exc)
+        overlay_manager = None
+
+    # ── HotkeyManager ─────────────────────────────────────────────────
+    hotkey_manager: HotkeyManager | None = None
+    try:
+        from output.undo import UndoManager
+        undo_manager = UndoManager()
+    except Exception:
+        undo_manager = None
+    try:
+        hotkey_manager = HotkeyManager(
+            decision_engine=decision_engine,
+            csv_logger=csv_logger,
+            overlay_manager=overlay_manager,
+            undo_manager=undo_manager,
+        )
+        hotkey_manager.start()
+        logger.info("HotkeyManager started (mode hotkeys Ctrl+Alt+1/2/3/4/`/Space active).")
+    except Exception as exc:
+        logger.warning("HotkeyManager could not start (hotkeys disabled): %s", exc)
+        hotkey_manager = None
+
+    # Push initial badge state so the pill is visible immediately on startup
+    if overlay_manager is not None:
+        overlay_manager.update({
+            "mode":              decision_engine.current_mode.value,
+            "paused":            decision_engine.current_mode.name == "PAUSED",
+            "face_ok":           False,
+            "mic_ok":            False,
+            "last_cmd":          "starting",
+            "last_ok":           True,
+            "speech_fail_count": 0,
+        })
+
     # ── Router ────────────────────────────────────────────────────────
     router = Router(controller, csv_logger=csv_logger, decision_engine=decision_engine)
 
@@ -406,6 +452,22 @@ def main(dry_run: bool = config.DRY_RUN) -> None:
                     result.mode.value, result.reason, result.is_override,
                 )
 
+                # ── Keep overlay face/mic dots live every sensor cycle ────
+                if overlay_manager is not None:
+                    face_conf = float(reading.get("face_confidence", 0.0))
+                    noise     = float(reading.get("noise_level", 0.0))
+                    face_ok   = face_conf >= config.DECISION_FACE_CONF_THRESHOLD
+                    mic_ok    = noise     <  config.DECISION_NOISE_THRESHOLD
+                    overlay_manager.update({
+                        "mode":              result.mode.value,
+                        "paused":            result.mode.value == "PAUSED",
+                        "face_ok":           face_ok,
+                        "mic_ok":            mic_ok,
+                        "last_cmd":          "",
+                        "last_ok":           True,
+                        "speech_fail_count": 0,
+                    })
+
             except queue.Empty:
                 continue
             except Exception as exc:
@@ -448,6 +510,8 @@ def main(dry_run: bool = config.DRY_RUN) -> None:
             face_thread=face_thread,
             speech_thread=speech_thread,
             hotkey_listener=hotkey_listener,
+            hotkey_manager=hotkey_manager,
+            overlay_manager=overlay_manager,
             csv_logger=csv_logger,
         )
 
@@ -462,6 +526,8 @@ def _shutdown(
     face_thread: threading.Thread,
     speech_thread: threading.Thread,
     hotkey_listener,
+    hotkey_manager,
+    overlay_manager,
     csv_logger: CsvLogger,
 ) -> None:
     """Orderly shutdown: signal threads, release hardware, flush logs."""
@@ -504,10 +570,24 @@ def _shutdown(
         if t.is_alive():
             logger.warning("Thread %s did not exit within 5 s.", t.name)
 
-    # Stop hotkey listener
+    # Stop mode-switch hotkey manager (Ctrl+Alt+1/2/3/4/`/Space)
+    if hotkey_manager is not None:
+        try:
+            hotkey_manager.stop()
+        except Exception:
+            pass
+
+    # Stop emergency-stop hotkey listener
     if hotkey_listener is not None:
         try:
             hotkey_listener.stop()
+        except Exception:
+            pass
+
+    # Stop overlay (must come after other threads so the badge stays up until exit)
+    if overlay_manager is not None:
+        try:
+            overlay_manager.stop()
         except Exception:
             pass
 
